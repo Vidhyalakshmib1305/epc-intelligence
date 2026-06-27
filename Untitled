@@ -23,10 +23,10 @@ services:
       - OLLAMA_HOST=ollama:11434
     entrypoint: >
       /bin/sh -c "
-        echo Waiting for Ollama server...;
+        echo 'Waiting for Ollama server...';
         sleep 10;
         ollama pull mistral:7b;
-        echo Model ready.;
+        echo 'Model ready.';
       "
     depends_on:
       ollama:
