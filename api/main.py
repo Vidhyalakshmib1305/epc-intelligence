@@ -9,6 +9,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 app = FastAPI(title="EPC Intelligence API")
 
@@ -201,3 +202,63 @@ def get_chunks(doc_id: str):
         with_vectors=False
     )
     return {"chunks": [p.payload for p in results[0]]}
+
+class QueryRequest(BaseModel):
+    question: str
+    doc_type: str = None
+    top_k: int = 5
+
+
+@app.post("/query")
+async def query_documents(req: QueryRequest):
+    question_vector = embedder.encode(req.question).tolist()
+
+    search_filter = None
+    if req.doc_type:
+        search_filter = {
+            "must": [{"key": "doc_type", "match": {"value": req.doc_type}}]
+        }
+
+    results = get_qdrant().search(
+        collection_name=COLLECTION,
+        query_vector=question_vector,
+        limit=req.top_k,
+        query_filter=search_filter,
+        with_payload=True
+    )
+
+    if not results:
+        return {"answer": "No relevant documents found.", "sources": []}
+
+    context = ""
+    sources = []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({
+            "filename": r.payload["filename"],
+            "doc_type": r.payload["doc_type"],
+            "chunk_index": r.payload["chunk_index"],
+            "score": round(r.score, 3),
+            "text_preview": r.payload["text"][:200]
+        })
+
+    prompt = f"""You are an EPC project intelligence assistant. 
+Answer the question using ONLY the context below. 
+For each fact you state, reference the source number in brackets like [Source 1].
+If the answer is not in the context, say "Not found in uploaded documents."
+
+Context:
+{context}
+
+Question: {req.question}
+
+Answer:"""
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+        )
+        answer = response.json().get("response", "No response from model")
+
+    return {"answer": answer, "sources": sources}
