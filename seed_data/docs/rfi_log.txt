@@ -1,0 +1,57 @@
+REQUEST FOR INFORMATION LOG
+Project: Hyperscale Data Centre - Chennai Campus
+Document No: RFI-LOG-001
+Updated: June 2026
+
+RFI-001
+Subject: UPS room ventilation requirements
+Raised by: MEP Contractor
+Date: 15 Jan 2026
+Question: Specification section 2 requires double conversion UPS but does not 
+specify ventilation requirements for UPS battery rooms. What are the minimum 
+air changes per hour required?
+Response: Minimum 6 air changes per hour for VRLA battery rooms per 
+IEEE 1187. Hydrogen detection required. Response issued 20 Jan 2026.
+Status: CLOSED
+
+RFI-002  
+Subject: Cable tray fill factor clarification
+Raised by: Electrical Contractor
+Date: 28 Jan 2026
+Question: Spec section 5.3 states 50% fill factor for cable trays. Does this 
+apply to both power and data cable trays or power trays only?
+Response: 50% fill applies to power cable trays only. Data cable trays 
+to follow TIA-569 recommendations (40% fill). Response issued 2 Feb 2026.
+Status: CLOSED
+
+RFI-003
+Subject: Chiller refrigerant substitution
+Raised by: Mechanical Contractor  
+Date: 5 Feb 2026
+Question: R134a specified in MECH-SPEC-002 section 2.4. Can R1234yf be 
+substituted given lower GWP and upcoming F-gas regulations?
+Response: R1234yf is acceptable subject to submission of revised 
+safety data sheet and confirmation of chiller manufacturer approval. 
+Schneider chillers confirmed compatible. Response issued 12 Feb 2026.
+Status: CLOSED
+
+RFI-004
+Subject: Generator paralleling requirements
+Raised by: Electrical Contractor
+Date: 18 Mar 2026
+Question: Three generators specified with automatic synchronisation panel. 
+Should all three generators be capable of paralleling simultaneously or 
+is 2+1 standby configuration acceptable?
+Response: All three must be capable of parallel operation simultaneously 
+for maintenance scenarios. Revise synchronisation panel specification accordingly.
+Status: OPEN - awaiting contractor revised proposal
+
+RFI-005
+Subject: Raised floor load rating
+Raised by: IT Infrastructure Team
+Date: 2 Apr 2026  
+Question: Raised floor specification not found in documents. What is the 
+minimum floor loading for server racks at 15 kW per rack density?
+Response: Pending - structural engineer reviewing. 
+Preliminary: 12 kN/m2 static, 4.5 kN point load.
+Status: OPEN - formal response due Week 14

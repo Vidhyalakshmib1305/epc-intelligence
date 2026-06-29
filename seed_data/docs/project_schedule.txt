@@ -1,0 +1,48 @@
+PROJECT SCHEDULE - DATA CENTRE BLOCK A
+Project: Hyperscale Data Centre - Chennai Campus
+Document No: PROJ-SCHED-001 Rev 3
+Date: March 2026
+
+MILESTONE SUMMARY
+
+Phase 1: Civil & Structure (Weeks 1-12)
+- Week 1-2: Site clearance and piling works
+- Week 3-6: Foundation and ground floor slab
+- Week 7-10: Structural steel erection  
+- Week 11-12: Roof and facade works
+STATUS: Complete
+
+Phase 2: Mechanical & Electrical Rough-in (Weeks 8-20)
+- Week 8-12: HV cable installation and termination
+- Week 10-14: Chilled water pipework installation
+- Week 12-16: Cable tray and containment systems
+- Week 14-18: UPS and generator installation
+- Week 16-20: Cooling tower installation
+STATUS: In Progress - HV cable termination delayed by 2 weeks due to 
+switchgear delivery delay from ABB (new ETA Week 15)
+
+Phase 3: IT Infrastructure (Weeks 16-24)
+- Week 16-18: Raised floor installation
+- Week 18-20: CRAH unit installation and pipework connections
+- Week 20-22: Network and fibre cabling
+- Week 22-24: Server rack installation
+STATUS: Not Started - dependent on Phase 2 completion
+
+Phase 4: Commissioning (Weeks 22-28)
+- Week 22-24: Pre-commissioning checks and flushing
+- Week 24-26: Individual equipment commissioning  
+- Week 26-27: Integrated Systems Test (IST)
+- Week 28: Uptime Institute Tier III certification audit
+STATUS: Not Started
+
+CRITICAL PATH ITEMS:
+1. ABB switchgear delivery - original Week 13, now Week 15 (2 week delay)
+2. CEIG approval for HV works - submitted Week 10, pending response
+3. Chiller factory acceptance tests - scheduled Week 18, cannot move
+4. Tier III audit - fixed date Week 28, cannot move
+
+RISKS:
+- Switchgear delay may push commissioning start to Week 24 (was Week 22)
+- If commissioning delayed, Tier III audit at risk
+- Monsoon season begins Week 20 - outdoor cooling tower work at risk
+- 3 of 12 CRAH units showing 14-week lead time vs 10-week planned

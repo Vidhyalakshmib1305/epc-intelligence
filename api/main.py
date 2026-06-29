@@ -1,15 +1,15 @@
 import os
 import uuid
-import httpx
-import psycopg2
-import pdfplumber
+import httpx  # pyright: ignore[reportMissingImports]
+import psycopg2  # pyright: ignore[reportMissingModuleSource]
+import pdfplumber  # pyright: ignore[reportMissingImports]
 from pathlib import Path
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
-from sentence_transformers import SentenceTransformer
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from qdrant_client import QdrantClient  # pyright: ignore[reportMissingImports]
+from qdrant_client.models import Distance, VectorParams, PointStruct  # pyright: ignore[reportMissingImports]
+from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
+from fastapi import FastAPI, UploadFile, File, HTTPException  # pyright: ignore[reportMissingImports]
+from fastapi.middleware.cors import CORSMiddleware  # pyright: ignore[reportMissingImports]
+from pydantic import BaseModel  # pyright: ignore[reportMissingImports]
 
 app = FastAPI(title="EPC Intelligence API")
 
@@ -27,8 +27,8 @@ UPLOAD_DIR   = Path("/app/uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 COLLECTION   = "epc_documents"
-CHUNK_SIZE   = 500
-CHUNK_OVERLAP = 50
+CHUNK_SIZE   = 100
+CHUNK_OVERLAP = 20
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 

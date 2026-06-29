@@ -1,0 +1,42 @@
+MECHANICAL & COOLING SPECIFICATION - DATA CENTRE BLOCK A
+Project: Hyperscale Data Centre - Chennai Campus  
+Document No: MECH-SPEC-002 Rev 1
+Issued: February 2026
+
+1. COOLING SYSTEM OVERVIEW
+The data centre cooling system shall maintain IT space conditions of 
+18-27 degrees Celsius inlet temperature per ASHRAE A1 class requirements.
+Design PUE target: 1.4 or below.
+
+2. CHILLED WATER PLANT
+2.1 Chillers: 4 x 1500 kW centrifugal chillers (N+1 with 1 standby)
+2.2 Chilled water supply: 7 degrees Celsius supply, 13 degrees return
+2.3 COP: Minimum 6.0 at design conditions
+2.4 Refrigerant: R134a or low-GWP alternative (R513A acceptable)
+2.5 Accepted makes: Carrier, Trane, York, Daikin Applied
+
+3. COMPUTER ROOM AIR HANDLERS (CRAH)
+3.1 Type: Chilled water CRAH units, variable speed fans
+3.2 Capacity: 60 kW per unit, 2N redundancy per aisle
+3.3 Airflow: Hot aisle/cold aisle containment mandatory
+3.4 Controls: BACnet integration with DCIM platform
+3.5 Accepted makes: Stulz, Schneider, Vertiv Liebert
+
+4. COOLING TOWERS
+4.1 Type: Induced draft crossflow, fibre reinforced plastic
+4.2 Capacity: Sized for full IT load plus 20% margin
+4.3 Basin heaters: Required for ambient below 5 degrees
+4.4 Water treatment: Chemical dosing system mandatory
+4.5 Drift eliminators: Maximum 0.001% drift loss
+
+5. PIPEWORK
+5.1 Chilled water pipework: Black steel, schedule 40 minimum
+5.2 Insulation: Closed cell foam, minimum 25mm thickness
+5.3 Pipe supports: Clevis hangers at maximum 2.5m spacing
+5.4 Leak detection: Linear leak detection cable under all raised floor areas
+
+6. COMMISSIONING REQUIREMENTS
+6.1 Witness testing of all chillers at factory before delivery
+6.2 Integrated systems test (IST) for minimum 72 hours
+6.3 All CRAH units to be commissioned with airflow measurement
+6.4 Thermal mapping of IT space required post-commissioning
