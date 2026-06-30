@@ -262,3 +262,155 @@ Answer:"""
         answer = response.json().get("response", "No response from model")
 
     return {"answer": answer, "sources": sources}
+
+@app.post("/agents/spec-compliance")
+async def spec_compliance_agent(req: QueryRequest):
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION,
+        query_vector=question_vector,
+        limit=5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "specification"}}]},
+        with_payload=True
+    )
+    if not results:
+        return {"compliance_status": "unknown", "answer": "No specification documents found.", "sources": []}
+
+    context = ""
+    sources = []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({
+            "filename": r.payload["filename"],
+            "chunk_index": r.payload["chunk_index"],
+            "score": round(r.score, 3),
+            "text_preview": r.payload["text"][:200]
+        })
+
+    prompt = f"""You are a strict EPC specification compliance checker for data centre construction.
+Analyse the following query against the specification documents provided.
+Determine if there is a compliance requirement, what it states exactly, and flag any gaps or risks.
+Format your response as:
+REQUIREMENT: [what the spec says]
+COMPLIANCE STATUS: [COMPLIANT / NON-COMPLIANT / REQUIRES VERIFICATION]
+RISK: [any risk or gap identified]
+SOURCE: [cite the source document and section]
+
+Specification context:
+{context}
+
+Query: {req.question}
+
+Analysis:"""
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+        )
+        answer = r.json().get("response", "")
+
+    compliance_status = "COMPLIANT" if "COMPLIANT" in answer and "NON-COMPLIANT" not in answer else \
+                        "NON-COMPLIANT" if "NON-COMPLIANT" in answer else "REQUIRES VERIFICATION"
+
+    return {"compliance_status": compliance_status, "analysis": answer, "sources": sources}
+
+
+@app.post("/agents/schedule-risk")
+async def schedule_risk_agent(req: QueryRequest):
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION,
+        query_vector=question_vector,
+        limit=5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "schedule"}}]},
+        with_payload=True
+    )
+    if not results:
+        return {"risk_level": "unknown", "answer": "No schedule documents found.", "sources": []}
+
+    context = ""
+    sources = []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({
+            "filename": r.payload["filename"],
+            "chunk_index": r.payload["chunk_index"],
+            "score": round(r.score, 3),
+            "text_preview": r.payload["text"][:200]
+        })
+
+    prompt = f"""You are an EPC project schedule risk analyst for data centre construction.
+Analyse the schedule information and identify risks, delays, and critical path impacts.
+Format your response as:
+RISK LEVEL: [HIGH / MEDIUM / LOW]
+IDENTIFIED RISKS: [list each risk]
+CRITICAL PATH IMPACT: [impact on project completion]
+RECOMMENDATION: [what should be done]
+
+Schedule context:
+{context}
+
+Query: {req.question}
+
+Risk Analysis:"""
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+        )
+        answer = r.json().get("response", "")
+
+    risk_level = "HIGH" if "HIGH" in answer else "MEDIUM" if "MEDIUM" in answer else "LOW"
+
+    return {"risk_level": risk_level, "analysis": answer, "sources": sources}
+
+
+@app.post("/agents/rfi-copilot")
+async def rfi_copilot_agent(req: QueryRequest):
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION,
+        query_vector=question_vector,
+        limit=5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "rfi"}}]},
+        with_payload=True
+    )
+
+    context = ""
+    sources = []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({
+            "filename": r.payload["filename"],
+            "chunk_index": r.payload["chunk_index"],
+            "score": round(r.score, 3),
+            "text_preview": r.payload["text"][:200]
+        })
+
+    prompt = f"""You are an RFI (Request for Information) assistant for a data centre EPC project.
+Search the RFI log for relevant past RFIs and provide answers with references.
+If a similar RFI was resolved before, cite the resolution.
+If the RFI is still open, flag it clearly.
+Format your response as:
+SIMILAR RFIs FOUND: [list relevant past RFIs]
+ANSWER: [answer based on past RFI resolutions]
+OPEN ITEMS: [any unresolved related RFIs]
+RECOMMENDATION: [suggested next step]
+
+RFI Log context:
+{context}
+
+Current query: {req.question}
+
+RFI Analysis:"""
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+        )
+        answer = r.json().get("response", "")
+
+    return {"answer": answer, "sources": sources}
