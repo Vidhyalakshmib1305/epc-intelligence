@@ -1,8 +1,8 @@
-import httpx
+import httpx  # pyright: ignore[reportMissingImports]
 import io
 import os
-from fpdf import FPDF
-from fpdf.enums import XPos, YPos
+from fpdf import FPDF  # pyright: ignore[reportMissingModuleSource]
+from fpdf.enums import XPos, YPos  # pyright: ignore[reportMissingModuleSource]
 
 API_URL  = "http://localhost:8000"
 DOCS_DIR = os.path.join(os.path.dirname(__file__), "docs")

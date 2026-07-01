@@ -1,5 +1,5 @@
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client import QdrantClient  # pyright: ignore[reportMissingImports]
+from qdrant_client.models import Distance, VectorParams  # pyright: ignore[reportMissingImports]
 
 c = QdrantClient(url="http://qdrant:6333")
 c.delete_collection("epc_documents")

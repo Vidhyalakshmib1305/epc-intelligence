@@ -59,17 +59,25 @@ def init_db():
 
 
 def init_qdrant():
-    client = get_qdrant()
-    existing = [c.name for c in client.get_collections().collections]
-    if COLLECTION not in existing:
-        client.create_collection(
-            collection_name=COLLECTION,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-        )
-
-
-def chunk_text(text: str) -> list[str]:
-    words  = text.split()
+    import time
+    for attempt in range(12):
+        try:
+            client = get_qdrant()
+            existing = [c.name for c in client.get_collections().collections]
+            if COLLECTION not in existing:
+                client.create_collection(
+                    collection_name=COLLECTION,
+                    vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+                )
+                print(f"Created collection: {COLLECTION}")
+            else:
+                print(f"Collection {COLLECTION} already exists")
+            return
+        except Exception as e:
+            print(f"Qdrant not ready (attempt {attempt+1}/12): {e}")
+            time.sleep(5)
+    raise RuntimeError("Could not connect to Qdrant after 12 attempts")
+    
     chunks = []
     start  = 0
     while start < len(words):
