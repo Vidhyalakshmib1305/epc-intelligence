@@ -77,7 +77,10 @@ def init_qdrant():
             print(f"Qdrant not ready (attempt {attempt+1}/12): {e}")
             time.sleep(5)
     raise RuntimeError("Could not connect to Qdrant after 12 attempts")
-    
+
+
+def chunk_text(text):
+    words = text.split()
     chunks = []
     start  = 0
     while start < len(words):
@@ -270,6 +273,76 @@ Answer:"""
         answer = response.json().get("response", "No response from model")
 
     return {"answer": answer, "sources": sources}
+
+@app.post("/query/stream")
+async def query_documents_stream(req: QueryRequest):
+    import json
+    from fastapi.responses import StreamingResponse
+
+    question_vector = embedder.encode(req.question).tolist()
+
+    search_filter = None
+    if req.doc_type:
+        search_filter = {"must": [{"key": "doc_type", "match": {"value": req.doc_type}}]}
+
+    results = get_qdrant().search(
+        collection_name=COLLECTION,
+        query_vector=question_vector,
+        limit=req.top_k,
+        query_filter=search_filter,
+        with_payload=True
+    )
+
+    if not results:
+        async def empty():
+            yield "No relevant documents found."
+        return StreamingResponse(empty(), media_type="text/plain")
+
+    context = ""
+    sources = []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({
+            "filename": r.payload["filename"],
+            "doc_type": r.payload["doc_type"],
+            "chunk_index": r.payload["chunk_index"],
+            "score": round(r.score, 3),
+            "text_preview": r.payload["text"][:200]
+        })
+
+    prompt = f"""You are an EPC project intelligence assistant.
+Answer the question using ONLY the context below.
+For each fact you state, reference the source number in brackets like [Source 1].
+If the answer is not in the context, say "Not found in uploaded documents."
+
+Context:
+{context}
+
+Question: {req.question}
+
+Answer:"""
+
+    async def generate():
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": True}
+            ) as r:
+                async for line in r.aiter_lines():
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            if not data.get("done"):
+                                token = data.get("response", "")
+                                if token:
+                                    yield token
+                        except Exception:
+                            pass
+        yield f"\n\n__SOURCES__{json.dumps(sources)}"
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
 
 @app.post("/agents/spec-compliance")
 async def spec_compliance_agent(req: QueryRequest):

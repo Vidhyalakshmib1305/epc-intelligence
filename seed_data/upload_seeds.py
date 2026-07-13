@@ -35,5 +35,8 @@ for filename, doc_type in doc_configs:
             files={"file": (pdf_name, pdf_file, "application/pdf")},
             timeout=60
         )
+        if r.status_code >= 400:
+            print(f"{pdf_name}: ERROR {r.status_code} | {r.text[:500]}")
+            break
         data = r.json()
         print(f"{pdf_name}: {r.status_code} | chunks={data.get('chunks_stored','?')} | pages={data.get('page_count','?')}")
