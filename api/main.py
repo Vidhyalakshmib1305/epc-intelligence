@@ -265,10 +265,10 @@ Question: {req.question}
 
 Answer:"""
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         response = await client.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 512}
         )
         answer = response.json().get("response", "No response from model")
 
@@ -323,7 +323,7 @@ Question: {req.question}
 Answer:"""
 
     async def generate():
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             async with client.stream(
                 "POST",
                 f"{OLLAMA_URL}/api/generate",
@@ -384,10 +384,10 @@ Query: {req.question}
 
 Analysis:"""
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 512}
         )
         answer = r.json().get("response", "")
 
@@ -436,10 +436,10 @@ Query: {req.question}
 
 Risk Analysis:"""
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 512}
         )
         answer = r.json().get("response", "")
 
@@ -487,10 +487,10 @@ Current query: {req.question}
 
 RFI Analysis:"""
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         r = await client.post(
             f"{OLLAMA_URL}/api/generate",
-            json={"model": "mistral:7b", "prompt": prompt, "stream": False}
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 512}
         )
         answer = r.json().get("response", "")
 
