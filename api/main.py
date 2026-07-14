@@ -277,7 +277,7 @@ Answer:"""
 @app.post("/query/stream")
 async def query_documents_stream(req: QueryRequest):
     import json
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
     question_vector = embedder.encode(req.question).tolist()
 
@@ -495,3 +495,178 @@ RFI Analysis:"""
         answer = r.json().get("response", "")
 
     return {"answer": answer, "sources": sources}
+
+@app.post("/agents/spec-compliance/stream")
+async def spec_compliance_stream(req: QueryRequest):
+    import json
+    from fastapi.responses import StreamingResponse
+
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "specification"}}]},
+        with_payload=True
+    )
+    if not results:
+        async def empty():
+            yield "No specification documents found."
+            yield f'\n\n__META__{json.dumps({"compliance_status":"UNKNOWN"})}__SOURCES__[]'
+        return StreamingResponse(empty(), media_type="text/plain")
+
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"],
+                        "score": round(r.score, 3), "text_preview": r.payload["text"][:200]})
+
+    prompt = f"""You are a strict EPC specification compliance checker for data centre construction.
+Analyse the following query against the specification documents provided.
+Format your response as:
+REQUIREMENT: [what the spec says]
+COMPLIANCE STATUS: [COMPLIANT / NON-COMPLIANT / REQUIRES VERIFICATION]
+RISK: [any risk or gap identified]
+SOURCE: [cite the source document and section]
+
+Specification context:
+{context}
+
+Query: {req.question}
+
+Analysis:"""
+
+    async def generate():
+        full_text = ""
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream("POST", f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": True, "num_predict": 512}
+            ) as r:
+                async for line in r.aiter_lines():
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            if not data.get("done"):
+                                token = data.get("response", "")
+                                if token:
+                                    full_text += token
+                                    yield token
+                        except Exception:
+                            pass
+        status = "NON-COMPLIANT" if "NON-COMPLIANT" in full_text else \
+                 "COMPLIANT" if "COMPLIANT" in full_text else "REQUIRES VERIFICATION"
+        yield f'\n\n__META__{json.dumps({"compliance_status": status})}__SOURCES__{json.dumps(sources)}'
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.post("/agents/schedule-risk/stream")
+async def schedule_risk_stream(req: QueryRequest):
+    import json
+    from fastapi.responses import StreamingResponse
+
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "schedule"}}]},
+        with_payload=True
+    )
+    if not results:
+        async def empty():
+            yield "No schedule documents found."
+            yield f'\n\n__META__{json.dumps({"risk_level":"UNKNOWN"})}__SOURCES__[]'
+        return StreamingResponse(empty(), media_type="text/plain")
+
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"],
+                        "score": round(r.score, 3), "text_preview": r.payload["text"][:200]})
+
+    prompt = f"""You are an EPC project schedule risk analyst for data centre construction.
+Analyse the schedule information and identify risks, delays, and critical path impacts.
+Format your response as:
+RISK LEVEL: [HIGH / MEDIUM / LOW]
+IDENTIFIED RISKS: [list each risk]
+CRITICAL PATH IMPACT: [impact on project completion]
+RECOMMENDATION: [what should be done]
+
+Schedule context:
+{context}
+
+Query: {req.question}
+
+Risk Analysis:"""
+
+    async def generate():
+        full_text = ""
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream("POST", f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": True, "num_predict": 512}
+            ) as r:
+                async for line in r.aiter_lines():
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            if not data.get("done"):
+                                token = data.get("response", "")
+                                if token:
+                                    full_text += token
+                                    yield token
+                        except Exception:
+                            pass
+        risk = "HIGH" if "HIGH" in full_text else "MEDIUM" if "MEDIUM" in full_text else "LOW"
+        yield f'\n\n__META__{json.dumps({"risk_level": risk})}__SOURCES__{json.dumps(sources)}'
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.post("/agents/rfi-copilot/stream")
+async def rfi_copilot_stream(req: QueryRequest):
+    import json
+    from fastapi.responses import StreamingResponse
+
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "rfi"}}]},
+        with_payload=True
+    )
+
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"],
+                        "score": round(r.score, 3), "text_preview": r.payload["text"][:200]})
+
+    prompt = f"""You are an RFI assistant for a data centre EPC project.
+Search the RFI log for relevant past RFIs and provide answers with references.
+Format your response as:
+SIMILAR RFIs FOUND: [list relevant past RFIs]
+ANSWER: [answer based on past RFI resolutions]
+OPEN ITEMS: [any unresolved related RFIs]
+RECOMMENDATION: [suggested next step]
+
+RFI Log context:
+{context}
+
+Current query: {req.question}
+
+RFI Analysis:"""
+
+    async def generate():
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream("POST", f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": True, "num_predict": 512}
+            ) as r:
+                async for line in r.aiter_lines():
+                    if line.strip():
+                        try:
+                            data = json.loads(line)
+                            if not data.get("done"):
+                                token = data.get("response", "")
+                                if token:
+                                    yield token
+                        except Exception:
+                            pass
+        yield f'\n\n__META__{json.dumps({})}__SOURCES__{json.dumps(sources)}'
+
+    return StreamingResponse(generate(), media_type="text/plain")
