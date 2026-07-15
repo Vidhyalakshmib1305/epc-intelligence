@@ -1,5 +1,5 @@
-import httpx
-import pytest
+import httpx  # pyright: ignore[reportMissingImports]
+import pytest  # pyright: ignore[reportMissingImports]
 
 BASE = "http://localhost:8000"
 TIMEOUT = 300

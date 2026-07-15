@@ -9,6 +9,21 @@ export default function Upload() {
 
   const handleUpload = async () => {
     if (!file) return
+
+    // Client-side validation
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Only PDF files are supported.')
+      return
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setError('File too large. Maximum size is 50MB.')
+      return
+    }
+    if (file.size === 0) {
+      setError('File is empty.')
+      return
+    }
+
     setLoading(true); setError(null); setResult(null)
     const formData = new FormData()
     formData.append('file', file)

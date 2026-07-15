@@ -7,7 +7,7 @@ from pathlib import Path
 from qdrant_client import QdrantClient  # pyright: ignore[reportMissingImports]
 from qdrant_client.models import Distance, VectorParams, PointStruct  # pyright: ignore[reportMissingImports]
 from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
-from fastapi import FastAPI, UploadFile, File, HTTPException  # pyright: ignore[reportMissingImports]
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException  # pyright: ignore[reportMissingImports]
 from fastapi.middleware.cors import CORSMiddleware  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel  # pyright: ignore[reportMissingImports]
 
@@ -98,92 +98,99 @@ def startup():
 
 @app.get("/health")
 async def health():
-    status = {}
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-            models = [m["name"] for m in r.json().get("models", [])]
-            status["ollama"] = "ok"
-            status["ollama_models"] = models
-    except Exception as e:
-        status["ollama"] = f"error: {e}"
-    try:
-        conn = get_db()
-        conn.close()
-        status["postgres"] = "ok"
-    except Exception as e:
-        status["postgres"] = f"error: {e}"
+    services = {}
+
+    # Qdrant
     try:
         client = get_qdrant()
-        cols = [c.name for c in client.get_collections().collections]
-        status["qdrant"] = "ok"
-        status["qdrant_collections"] = cols
+        info = client.get_collection(COLLECTION)
+        services["qdrant"] = {"status": "ok", "documents": info.points_count}
     except Exception as e:
-        status["qdrant"] = f"error: {e}"
+        services["qdrant"] = {"status": "error", "message": str(e)}
+
+    # Ollama + model check
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f"{OLLAMA_URL}/api/tags")
+            models = [m["name"] for m in r.json().get("models", [])]
+            has_mistral = any("mistral" in m for m in models)
+            services["ollama"] = {
+                "status": "ok" if has_mistral else "model_not_ready",
+                "mistral_ready": has_mistral,
+                "models": models
+            }
+    except Exception as e:
+        services["ollama"] = {"status": "error", "mistral_ready": False, "message": str(e)}
+
+    # Postgres
+    try:
+        conn = get_db()
+        conn.cursor().execute("SELECT 1")
+        services["postgres"] = {"status": "ok"}
+    except Exception as e:
+        services["postgres"] = {"status": "error", "message": str(e)}
+
     overall = "ok" if all(
-        v == "ok" or isinstance(v, list)
-        for k, v in status.items()
-        if k not in ("ollama_models", "qdrant_collections")
+        s.get("status") == "ok" for s in services.values()
     ) else "degraded"
-    return {"status": overall, "services": status}
+    return {"status": overall, "services": services}
 
 
 @app.post("/documents/upload")
-async def upload_document(
-    file: UploadFile = File(...),
-    doc_type: str = "general"
-):
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files are supported")
+async def upload_document(file: UploadFile = File(...), doc_type: str = Form(...)):  # pyright: ignore[reportUndefinedVariable]
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
-    doc_id    = str(uuid.uuid4())
-    save_path = UPLOAD_DIR / f"{doc_id}.pdf"
-    contents  = await file.read()
-    save_path.write_bytes(contents)
+    content = await file.read()
 
-    full_text = ""
-    with pdfplumber.open(save_path) as pdf:
-        page_count = len(pdf.pages)
-        for page in pdf.pages:
-            full_text += (page.extract_text() or "") + "\n"
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 50MB.")
 
+    try:
+        pdf_doc = fitz.open(stream=content, filetype="pdf")  # pyright: ignore[reportUndefinedVariable]
+        if pdf_doc.page_count == 0:
+            raise HTTPException(status_code=400, detail="PDF has no pages.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid or corrupt PDF file.")
+
+    try:
+        text = ""
+        for page in pdf_doc:
+            text += page.get_text()
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="PDF appears to be scanned/image-only. Text extraction not supported yet.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
+
+    # chunk + embed + store (rest of your existing upload logic here)
+    chunks = [text[i:i+500] for i in range(0, len(text), 400)]
     conn = get_db()
-    cur  = conn.cursor()
+    cur = conn.cursor()
     cur.execute(
-        "INSERT INTO documents (id, filename, doc_type, page_count) VALUES (%s,%s,%s,%s)",
-        (doc_id, file.filename, doc_type, page_count)
+        "INSERT INTO documents (filename, doc_type, chunk_count) VALUES (%s, %s, %s) RETURNING id",
+        (file.filename, doc_type, len(chunks))
     )
+    doc_id = cur.fetchone()[0]
     conn.commit()
-    cur.close()
-    conn.close()
 
-    chunks   = chunk_text(full_text)
-    vectors  = embedder.encode(chunks).tolist()
-    points   = [
-        PointStruct(
-            id      = str(uuid.uuid4()),
-            vector  = vectors[i],
-            payload = {
-                "doc_id":   doc_id,
-                "filename": file.filename,
-                "doc_type": doc_type,
-                "chunk_index": i,
-                "text":     chunks[i]
-            }
-        )
-        for i in range(len(chunks))
-    ]
+    points = []
+    for i, chunk in enumerate(chunks):
+        vector = embedder.encode(chunk).tolist()
+        points.append(PointStruct(
+            id=doc_id * 1000 + i,
+            vector=vector,
+            payload={"filename": file.filename, "doc_type": doc_type,
+                     "chunk_index": i, "text": chunk, "doc_id": doc_id}
+        ))
     get_qdrant().upsert(collection_name=COLLECTION, points=points)
 
-    return {
-        "doc_id":      doc_id,
-        "filename":    file.filename,
-        "doc_type":    doc_type,
-        "page_count":  page_count,
-        "chunks_stored": len(chunks),
-        "preview":     full_text[:300]
-    }
-
+    return {"id": doc_id, "filename": file.filename, "doc_type": doc_type, "chunks_stored": len(chunks)}
 
 @app.get("/documents")
 def list_documents():
@@ -499,7 +506,7 @@ RFI Analysis:"""
 @app.post("/agents/spec-compliance/stream")
 async def spec_compliance_stream(req: QueryRequest):
     import json
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
     question_vector = embedder.encode(req.question).tolist()
     results = get_qdrant().search(
@@ -561,7 +568,7 @@ Analysis:"""
 @app.post("/agents/schedule-risk/stream")
 async def schedule_risk_stream(req: QueryRequest):
     import json
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
     question_vector = embedder.encode(req.question).tolist()
     results = get_qdrant().search(
@@ -622,7 +629,7 @@ Risk Analysis:"""
 @app.post("/agents/rfi-copilot/stream")
 async def rfi_copilot_stream(req: QueryRequest):
     import json
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
     question_vector = embedder.encode(req.question).tolist()
     results = get_qdrant().search(

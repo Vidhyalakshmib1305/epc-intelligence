@@ -18,12 +18,25 @@ const tabs = [
 export default function App() {
   const [activeTab, setActiveTab] = useState('upload')
   const [health, setHealth] = useState(null)
+  const [ollamaReady, setOllamaReady] = useState(false)
+  const [docCount, setDocCount] = useState(0)
 
   useEffect(() => {
-    fetch('/api/health')
-      .then(r => r.json())
-      .then(setHealth)
-      .catch(() => setHealth({ status: 'error' }))
+    const check = async () => {
+      try {
+        const r = await fetch('/api/health')
+        const data = await r.json()
+        setHealth(data.status)
+        setOllamaReady(data.services?.ollama?.mistral_ready ?? false)
+        setDocCount(data.services?.qdrant?.documents ?? 0)
+      } catch {
+        setHealth('degraded')
+        setOllamaReady(false)
+      }
+    }
+    check()
+    const interval = setInterval(check, 15000)
+    return () => clearInterval(interval)
   }, [])
 
   return (
@@ -34,12 +47,22 @@ export default function App() {
           <p className="text-xs text-gray-400 mt-1">Data Centre Platform</p>
           {health && (
             <span className={`inline-block mt-2 px-2 py-1 rounded text-xs font-medium ${
-              health.status === 'ok' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'
+              health === 'ok' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'
             }`}>
-              {health.status === 'ok' ? '● Online' : '● Degraded'}
+              {health === 'ok' ? '● Online' : '● Degraded'}
             </span>
           )}
         </div>
+        {!ollamaReady && (
+          <div className="mx-3 mt-2 p-2 bg-yellow-900 border border-yellow-600 rounded-lg text-yellow-200 text-xs">
+            ⏳ Mistral 7B loading… First query may take 1–2 min.
+          </div>
+        )}
+        {ollamaReady && docCount === 0 && (
+          <div className="mx-3 mt-2 p-2 bg-blue-900 border border-blue-600 rounded-lg text-blue-200 text-xs">
+            📄 No documents yet. Go to Upload to add seed data.
+          </div>
+        )}
         <nav className="flex-1 p-4 space-y-1">
           {tabs.map(tab => (
             <button
