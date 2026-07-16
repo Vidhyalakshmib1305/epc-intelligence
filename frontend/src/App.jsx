@@ -5,6 +5,7 @@ import SpecCompliance from './components/SpecCompliance'
 import ScheduleRisk from './components/ScheduleRisk'
 import RFICopilot from './components/RFICopilot'
 import SupplyChain from './components/SupplyChain'
+import CommissioningQA from './components/CommissioningQA'
 import Documents from './components/Documents'
 
 const tabs = [
@@ -14,6 +15,7 @@ const tabs = [
   { id: 'schedule',  label: 'Schedule Risk',     icon: '📅' },
   { id: 'rfi',       label: 'RFI Copilot',       icon: '💬' },
   { id: 'supply-chain', label: 'Supply Chain',    icon: '🚚' },
+  { id: 'commissioning-qa', label: 'Commissioning QA', icon: '🔬' },
   { id: 'documents', label: 'Documents',          icon: '📁' },
 ]
 
@@ -94,6 +96,7 @@ export default function App() {
         {activeTab === 'schedule'  && <ScheduleRisk />}
         {activeTab === 'rfi'       && <RFICopilot />}
         {activeTab === 'supply-chain' && <SupplyChain />}
+        {activeTab === 'commissioning-qa' && <CommissioningQA />}
         {activeTab === 'documents' && <Documents />}
       </div>
     </div>

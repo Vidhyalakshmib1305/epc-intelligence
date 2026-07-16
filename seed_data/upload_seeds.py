@@ -49,3 +49,4 @@ for filename, doc_type in doc_configs:
     upload(filename, doc_type)
 
 upload("supply_chain.pdf", "supply_chain")
+upload("commissioning_qa.pdf", "commissioning")

@@ -788,3 +788,89 @@ Supply Chain Analysis:"""
         yield f'\n\n__META__{json.dumps({"delivery_risk": risk})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.post("/agents/commissioning-qa")
+async def commissioning_qa_agent(req: QueryRequest):
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "commissioning"}}]},
+        with_payload=True
+    )
+    if not results:
+        return {"test_status": "UNKNOWN", "answer": "No commissioning documents found.", "sources": []}
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"], "score": round(r.score, 3)})
+    prompt = f"""You are a commissioning QA engineer for a data centre EPC project.
+Analyse test results and non-conformances against TIA-942 and Tier III standards.
+Start your response with: TEST STATUS: [PASS / FAIL / PARTIAL]
+Context:\n{context}\nQuery: {req.question}\nAnalysis:"""
+    async with httpx.AsyncClient(timeout=300) as client:
+        r = await client.post(f"{OLLAMA_URL}/api/generate",
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 512})
+        answer = r.json().get("response", "")
+    status = "FAIL" if "FAIL" in answer else "PASS" if "PASS" in answer else "PARTIAL"
+    return {"test_status": status, "answer": answer, "sources": sources}
+
+
+@app.post("/agents/commissioning-qa/stream")
+async def commissioning_qa_stream(req: QueryRequest):
+    import json
+    from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "commissioning"}}]},
+        with_payload=True
+    )
+    if not results:
+        async def empty():
+            yield "No commissioning documents found. Please upload commissioning QA data first."
+            yield f'\n\n__META__{json.dumps({"test_status":"UNKNOWN"})}__SOURCES__[]'
+        return StreamingResponse(empty(), media_type="text/plain")
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"],
+                        "score": round(r.score, 3), "text_preview": r.payload["text"][:200]})
+    prompt = f"""You are a commissioning QA engineer for a data centre EPC project.
+Analyse test results and non-conformances against TIA-942 and Uptime Institute Tier III standards.
+Format your response as:
+TEST STATUS: [PASS / FAIL / PARTIAL]
+FAILED TESTS: [list any failed tests with NCR numbers]
+OPEN NON-CONFORMANCES: [list open NCRs with severity]
+TIER III READINESS: [summary of certification readiness]
+RECOMMENDATION: [what must be resolved before Tier III audit]
+
+Commissioning context:\n{context}\nQuery: {req.question}\nQA Analysis:"""
+
+    async def generate():
+        full_text = ""
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                async with client.stream("POST", f"{OLLAMA_URL}/api/generate",
+                    json={"model": "mistral:7b", "prompt": prompt, "stream": True, "num_predict": 512}) as r:
+                    async for line in r.aiter_lines():
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                if not data.get("done"):
+                                    token = data.get("response", "")
+                                    if token:
+                                        full_text += token
+                                        yield token
+                            except Exception:
+                                pass
+        except httpx.ConnectError:
+            yield "[ERROR: Cannot connect to Ollama.]"
+            return
+        except httpx.ReadTimeout:
+            yield "[ERROR: Response timed out. Please retry.]"
+            return
+        status = "FAIL" if "FAIL" in full_text else "PASS" if "PASS" in full_text else "PARTIAL"
+        yield f'\n\n__META__{json.dumps({"test_status": status})}__SOURCES__{json.dumps(sources)}'
+
+    return StreamingResponse(generate(), media_type="text/plain")
