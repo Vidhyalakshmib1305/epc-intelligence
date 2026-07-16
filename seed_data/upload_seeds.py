@@ -23,20 +23,29 @@ def txt_to_pdf_bytes(filepath):
             pdf.cell(0, 4, line.rstrip(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     return io.BytesIO(bytes(pdf.output()))
 
-for filename, doc_type in doc_configs:
-    filepath = os.path.join(DOCS_DIR, filename)
+def upload(filename, doc_type):
     pdf_name = filename.replace(".txt", ".pdf")
-    pdf_file = txt_to_pdf_bytes(filepath)
+
+    if filename.endswith(".txt"):
+        pdf_file = txt_to_pdf_bytes(os.path.join(DOCS_DIR, filename))
+    else:
+        with open(os.path.join(os.path.dirname(__file__), filename), "rb") as f:
+            pdf_file = io.BytesIO(f.read())
 
     with httpx.Client() as client:
         r = client.post(
             f"{API_URL}/documents/upload",
-            params={"doc_type": doc_type},
+            data={"doc_type": doc_type},
             files={"file": (pdf_name, pdf_file, "application/pdf")},
             timeout=60
         )
         if r.status_code >= 400:
             print(f"{pdf_name}: ERROR {r.status_code} | {r.text[:500]}")
-            break
+            return
         data = r.json()
         print(f"{pdf_name}: {r.status_code} | chunks={data.get('chunks_stored','?')} | pages={data.get('page_count','?')}")
+
+for filename, doc_type in doc_configs:
+    upload(filename, doc_type)
+
+upload("supply_chain.pdf", "supply_chain")

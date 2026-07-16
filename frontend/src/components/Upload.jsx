@@ -54,6 +54,7 @@ export default function Upload() {
             <option value="specification">Specification</option>
             <option value="schedule">Schedule</option>
             <option value="rfi_log">RFI Log</option>
+            <option value="supply_chain">Supply Chain</option>
             <option value="drawing">Drawing</option>
             <option value="other">Other</option>
           </select>

@@ -1,3 +1,4 @@
+import io
 import os
 import uuid
 import httpx  # pyright: ignore[reportMissingImports]
@@ -50,6 +51,7 @@ def init_db():
             filename    TEXT NOT NULL,
             doc_type    TEXT,
             page_count  INTEGER,
+            chunk_count INTEGER,
             uploaded_at TIMESTAMP DEFAULT NOW()
         )
     """)
@@ -149,8 +151,8 @@ async def upload_document(file: UploadFile = File(...), doc_type: str = Form(...
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 50MB.")
 
     try:
-        pdf_doc = fitz.open(stream=content, filetype="pdf")  # pyright: ignore[reportUndefinedVariable]
-        if pdf_doc.page_count == 0:
+        pdf_doc = pdfplumber.open(io.BytesIO(content))
+        if len(pdf_doc.pages) == 0:
             raise HTTPException(status_code=400, detail="PDF has no pages.")
     except HTTPException:
         raise
@@ -159,8 +161,8 @@ async def upload_document(file: UploadFile = File(...), doc_type: str = Form(...
 
     try:
         text = ""
-        for page in pdf_doc:
-            text += page.get_text()
+        for page in pdf_doc.pages:
+            text += page.extract_text() or ""
         if not text.strip():
             raise HTTPException(status_code=400, detail="PDF appears to be scanned/image-only. Text extraction not supported yet.")
     except HTTPException:
@@ -170,27 +172,28 @@ async def upload_document(file: UploadFile = File(...), doc_type: str = Form(...
 
     # chunk + embed + store (rest of your existing upload logic here)
     chunks = [text[i:i+500] for i in range(0, len(text), 400)]
+    doc_id = str(uuid.uuid4())
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO documents (filename, doc_type, chunk_count) VALUES (%s, %s, %s) RETURNING id",
-        (file.filename, doc_type, len(chunks))
+        "INSERT INTO documents (id, filename, doc_type, page_count, chunk_count) VALUES (%s, %s, %s, %s, %s)",
+        (doc_id, file.filename, doc_type, len(pdf_doc.pages), len(chunks))
     )
-    doc_id = cur.fetchone()[0]
     conn.commit()
 
     points = []
     for i, chunk in enumerate(chunks):
         vector = embedder.encode(chunk).tolist()
         points.append(PointStruct(
-            id=doc_id * 1000 + i,
+            id=str(uuid.uuid4()),
             vector=vector,
             payload={"filename": file.filename, "doc_type": doc_type,
                      "chunk_index": i, "text": chunk, "doc_id": doc_id}
         ))
     get_qdrant().upsert(collection_name=COLLECTION, points=points)
 
-    return {"id": doc_id, "filename": file.filename, "doc_type": doc_type, "chunks_stored": len(chunks)}
+    return {"id": doc_id, "filename": file.filename, "doc_type": doc_type,
+            "chunks_stored": len(chunks), "page_count": len(pdf_doc.pages)}
 
 @app.get("/documents")
 def list_documents():
@@ -675,5 +678,113 @@ RFI Analysis:"""
                         except Exception:
                             pass
         yield f'\n\n__META__{json.dumps({})}__SOURCES__{json.dumps(sources)}'
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
+
+@app.post("/agents/supply-chain")
+async def supply_chain_agent(req: QueryRequest):
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "supply_chain"}}]},
+        with_payload=True
+    )
+    if not results:
+        return {"delivery_risk": "UNKNOWN", "answer": "No supply chain documents found.", "sources": []}
+
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"],
+                        "score": round(r.score, 3)})
+
+    prompt = f"""You are a supply chain risk analyst for a data centre EPC project.
+Analyse procurement status. Identify at-risk deliveries.
+Start your response with: DELIVERY RISK: [CRITICAL / AT RISK / ON TRACK]
+
+Context:
+{context}
+
+Query: {req.question}
+
+Analysis:"""
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        r = await client.post(f"{OLLAMA_URL}/api/generate",
+            json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 512})
+        answer = r.json().get("response", "")
+
+    risk = "CRITICAL" if "CRITICAL" in answer else \
+           "AT RISK" if "AT RISK" in answer or "HIGH" in answer else "ON TRACK"
+    return {"delivery_risk": risk, "answer": answer, "sources": sources}
+
+
+@app.post("/agents/supply-chain/stream")
+async def supply_chain_stream(req: QueryRequest):
+    import json
+    from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
+
+    question_vector = embedder.encode(req.question).tolist()
+    results = get_qdrant().search(
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        query_filter={"must": [{"key": "doc_type", "match": {"value": "supply_chain"}}]},
+        with_payload=True
+    )
+    if not results:
+        async def empty():
+            yield "No supply chain documents found. Please upload procurement data first."
+            yield f'\n\n__META__{json.dumps({"delivery_risk": "UNKNOWN"})}__SOURCES__[]'
+        return StreamingResponse(empty(), media_type="text/plain")
+
+    context, sources = "", []
+    for i, r in enumerate(results):
+        context += f"\n[Source {i+1}: {r.payload['filename']}]\n{r.payload['text']}\n"
+        sources.append({"filename": r.payload["filename"], "chunk_index": r.payload["chunk_index"],
+                        "score": round(r.score, 3), "text_preview": r.payload["text"][:200]})
+
+    prompt = f"""You are a supply chain risk analyst for a data centre EPC project.
+Analyse the procurement status and identify at-risk equipment deliveries that could delay the project.
+Format your response as:
+DELIVERY RISK: [CRITICAL / AT RISK / ON TRACK]
+AT-RISK ITEMS: [list each item with reason]
+CRITICAL PATH IMPACT: [which activities are blocked]
+RECOMMENDATION: [immediate actions required]
+
+Procurement context:
+{context}
+
+Query: {req.question}
+
+Supply Chain Analysis:"""
+
+    async def generate():
+        full_text = ""
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                async with client.stream("POST", f"{OLLAMA_URL}/api/generate",
+                    json={"model": "mistral:7b", "prompt": prompt, "stream": True, "num_predict": 512}
+                ) as r:
+                    async for line in r.aiter_lines():
+                        if line.strip():
+                            try:
+                                data = json.loads(line)
+                                if not data.get("done"):
+                                    token = data.get("response", "")
+                                    if token:
+                                        full_text += token
+                                        yield token
+                            except Exception:
+                                pass
+        except httpx.ConnectError:
+            yield "[ERROR: Cannot connect to Ollama. Check that the service is running.]"
+            return
+        except httpx.ReadTimeout:
+            yield "[ERROR: Response timed out. Please retry.]"
+            return
+
+        risk = "CRITICAL" if "CRITICAL" in full_text else \
+               "AT RISK" if "AT RISK" in full_text or "HIGH" in full_text else "ON TRACK"
+        yield f'\n\n__META__{json.dumps({"delivery_risk": risk})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
