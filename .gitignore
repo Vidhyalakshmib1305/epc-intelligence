@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Build output
+frontend/dist/
+*.egg
+
+# Docker volumes / data
+postgres_data/
+qdrant_data/
+ollama_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Pytest
+.pytest_cache/
