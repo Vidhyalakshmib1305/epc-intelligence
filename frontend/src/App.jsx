@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import Dashboard from './components/Dashboard'
 import Upload from './components/Upload'
 import Query from './components/Query'
 import SpecCompliance from './components/SpecCompliance'
@@ -8,20 +9,21 @@ import SupplyChain from './components/SupplyChain'
 import CommissioningQA from './components/CommissioningQA'
 import Documents from './components/Documents'
 
-const tabs = [
-  { id: 'upload',    label: 'Upload Documents', icon: '📄' },
-  { id: 'query',     label: 'RAG Query',         icon: '🔍' },
-  { id: 'spec',      label: 'Spec Compliance',   icon: '✅' },
-  { id: 'schedule',  label: 'Schedule Risk',     icon: '📅' },
-  { id: 'rfi',       label: 'RFI Copilot',       icon: '💬' },
-  { id: 'supply-chain', label: 'Supply Chain',    icon: '🚚' },
+const NAV = [
+  { id: 'dashboard',        label: 'Dashboard',        icon: '🏠' },
+  { id: 'rag-query',        label: 'RAG Query',        icon: '🔍' },
+  { id: 'spec-compliance',  label: 'Spec Compliance',  icon: '✅' },
+  { id: 'schedule-risk',    label: 'Schedule Risk',    icon: '📅' },
+  { id: 'rfi-copilot',      label: 'RFI Copilot',      icon: '💬' },
+  { id: 'supply-chain',     label: 'Supply Chain',     icon: '🚚' },
   { id: 'commissioning-qa', label: 'Commissioning QA', icon: '🔬' },
-  { id: 'documents', label: 'Documents',          icon: '📁' },
+  { id: 'documents',        label: 'Documents',        icon: '📁' },
+  { id: 'upload',           label: 'Upload Documents', icon: '📤' },
 ]
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('upload')
-  const [health, setHealth] = useState(null)
+  const [activeTab, setActiveTab] = useState('dashboard')
+  const [health, setHealth] = useState('loading')
   const [ollamaReady, setOllamaReady] = useState(false)
   const [docCount, setDocCount] = useState(0)
 
@@ -29,75 +31,86 @@ export default function App() {
     const check = async () => {
       try {
         const r = await fetch('/api/health')
-        const data = await r.json()
-        setHealth(data.status)
-        setOllamaReady(data.services?.ollama?.mistral_ready ?? false)
-        setDocCount(data.services?.qdrant?.documents ?? 0)
-      } catch {
-        setHealth('degraded')
-        setOllamaReady(false)
-      }
+        const d = await r.json()
+        setHealth(d.status)
+        setOllamaReady(d.services?.ollama?.mistral_ready ?? false)
+        setDocCount(d.services?.qdrant?.documents ?? 0)
+      } catch { setHealth('degraded'); setOllamaReady(false) }
     }
     check()
-    const interval = setInterval(check, 15000)
-    return () => clearInterval(interval)
+    const iv = setInterval(check, 15000)
+    return () => clearInterval(iv)
   }, [])
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      <div className="w-64 bg-gray-900 text-white flex flex-col">
-        <div className="p-6 border-b border-gray-700">
-          <h1 className="text-lg font-bold text-blue-400">EPC Intelligence</h1>
-          <p className="text-xs text-gray-400 mt-1">Data Centre Platform</p>
-          {health && (
-            <span className={`inline-block mt-2 px-2 py-1 rounded text-xs font-medium ${
-              health === 'ok' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'
+    <div className="flex h-screen bg-slate-950 font-sans">
+      {/* Sidebar */}
+      <div className="w-60 bg-gradient-to-b from-slate-900 via-slate-800 to-slate-900 flex flex-col h-screen fixed left-0 top-0 shadow-2xl">
+        {/* Branding */}
+        <div className="p-5 border-b border-slate-700">
+          <h1 className="text-white font-black text-lg leading-tight">EPC Intelligence</h1>
+          <p className="text-slate-400 text-xs mt-0.5">Data Centre Platform</p>
+          <div className="mt-3 flex items-center gap-2">
+            <span className={`text-xs font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 ${
+              health === 'ok' ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : health === 'loading' ? 'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+              : 'bg-red-500/20 text-red-400 border border-red-500/30'
             }`}>
-              {health === 'ok' ? '● Online' : '● Degraded'}
+              <span className={`w-1.5 h-1.5 rounded-full ${health === 'ok' ? 'bg-green-400 animate-pulse' : health === 'loading' ? 'bg-slate-400' : 'bg-red-400 animate-pulse'}`} />
+              {health === 'ok' ? 'Online' : health === 'loading' ? 'Starting' : 'Degraded'}
             </span>
-          )}
+          </div>
         </div>
-        {!ollamaReady && (
-          <div className="mx-3 mt-2 p-2 bg-yellow-900 border border-yellow-600 rounded-lg text-yellow-200 text-xs">
+
+        {/* Banners */}
+        {!ollamaReady && health !== 'loading' && (
+          <div className="mx-3 mt-2 p-2.5 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-yellow-300 text-xs">
             ⏳ Mistral 7B loading… First query may take 1–2 min.
           </div>
         )}
         {ollamaReady && docCount === 0 && (
-          <div className="mx-3 mt-2 p-2 bg-blue-900 border border-blue-600 rounded-lg text-blue-200 text-xs">
-            📄 No documents yet. Go to Upload to add seed data.
+          <div className="mx-3 mt-2 p-2.5 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-300 text-xs">
+            📄 No documents yet. Upload seed data first.
           </div>
         )}
-        <nav className="flex-1 p-4 space-y-1">
-          {tabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-                activeTab === tab.id
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-              }`}
-            >
-              <span>{tab.icon}</span>
-              {tab.label}
+
+        {/* Nav */}
+        <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto mt-1">
+          {NAV.map(item => (
+            <button key={item.id} onClick={() => setActiveTab(item.id)}
+              className={`w-full text-left px-3 py-2.5 rounded-xl flex items-center gap-3 text-sm font-medium transition-all duration-150 ${
+                activeTab === item.id
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/25'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-700/60'
+              }`}>
+              <span className="text-base">{item.icon}</span>
+              {item.label}
             </button>
           ))}
         </nav>
-        <div className="p-4 border-t border-gray-700">
-          <p className="text-xs text-gray-500">ET AI Hackathon 2026</p>
-          <p className="text-xs text-gray-600">Powered by Mistral 7B</p>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-slate-700">
+          <p className="text-slate-500 text-xs">ET AI Hackathon 2026</p>
+          <p className="text-slate-600 text-xs">Powered by Mistral 7B</p>
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-8">
-        {activeTab === 'upload'    && <Upload />}
-        {activeTab === 'query'     && <Query />}
-        {activeTab === 'spec'      && <SpecCompliance />}
-        {activeTab === 'schedule'  && <ScheduleRisk />}
-        {activeTab === 'rfi'       && <RFICopilot />}
-        {activeTab === 'supply-chain' && <SupplyChain />}
-        {activeTab === 'commissioning-qa' && <CommissioningQA />}
-        {activeTab === 'documents' && <Documents />}
+      {/* Main Content */}
+      <div className="ml-60 flex-1 overflow-y-auto">
+        <div className="p-8">
+          <div key={activeTab} className="slide-in">
+            {activeTab === 'dashboard'        && <Dashboard onNavigate={setActiveTab} />}
+            {activeTab === 'upload'           && <Upload />}
+            {activeTab === 'rag-query'        && <Query />}
+            {activeTab === 'spec-compliance'  && <SpecCompliance />}
+            {activeTab === 'schedule-risk'    && <ScheduleRisk />}
+            {activeTab === 'rfi-copilot'      && <RFICopilot />}
+            {activeTab === 'supply-chain'     && <SupplyChain />}
+            {activeTab === 'commissioning-qa' && <CommissioningQA />}
+            {activeTab === 'documents'        && <Documents />}
+          </div>
+        </div>
       </div>
     </div>
   )

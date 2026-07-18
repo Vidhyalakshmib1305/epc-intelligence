@@ -1,4 +1,4 @@
-from fpdf import FPDF
+from fpdf import FPDF  # pyright: ignore[reportMissingModuleSource]
 
 pdf = FPDF()
 pdf.add_page()
