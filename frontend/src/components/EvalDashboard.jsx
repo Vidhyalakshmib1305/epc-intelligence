@@ -312,6 +312,23 @@ export default function EvalDashboard() {
               ))}
             </div>
 
+            {/* Run Eval button */}
+            {validated.length > 0 && (
+              <button onClick={runEval} disabled={running || runningInBg}
+                className="w-full py-3 rounded-xl text-sm font-bold text-white transition-all disabled:opacity-50"
+                style={{ background:'linear-gradient(135deg,#6366f1,#8b5cf6)',
+                  border:'1px solid rgba(99,102,241,0.5)',
+                  boxShadow:'0 0 20px rgba(99,102,241,0.3)' }}>
+                {running ? '⠙ Starting eval…' : runningInBg ? '⚙ Running in background…' : `▶ Run Eval (${validated.length} validated questions)`}
+              </button>
+            )}
+            {validated.length === 0 && questions.length > 0 && (
+              <div className="rounded-xl p-4 text-center"
+                style={{ background:'rgba(245,158,11,0.1)', border:'1px solid rgba(245,158,11,0.25)' }}>
+                <p className="text-amber-300 text-sm font-bold">Approve at least one question to enable Run Eval</p>
+              </div>
+            )}
+
             {/* Question list */}
             {['Pending review', 'Validated', 'Rejected'].map(section => {
               const qs = section === 'Pending review' ? pending
