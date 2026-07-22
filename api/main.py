@@ -8,7 +8,7 @@ from pathlib import Path
 from qdrant_client import QdrantClient  # pyright: ignore[reportMissingImports]
 from qdrant_client.models import Distance, VectorParams, PointStruct  # pyright: ignore[reportMissingImports]
 from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException  # pyright: ignore[reportMissingImports]
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks  # pyright: ignore[reportMissingImports]
 from fastapi.middleware.cors import CORSMiddleware  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel  # pyright: ignore[reportMissingImports]
 
@@ -55,6 +55,48 @@ def init_db():
             uploaded_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS eval_questions (
+            id              TEXT PRIMARY KEY,
+            doc_id          TEXT REFERENCES documents(id) ON DELETE CASCADE,
+            filename        TEXT NOT NULL,
+            doc_type        TEXT NOT NULL,
+            question        TEXT NOT NULL,
+            expected_answer TEXT,
+            validated       BOOLEAN DEFAULT FALSE,
+            rejected        BOOLEAN DEFAULT FALSE,
+            created_at      TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS eval_runs (
+            id               TEXT PRIMARY KEY,
+            total_questions  INTEGER,
+            hit_at_1         FLOAT,
+            hit_at_3         FLOAT,
+            hit_at_5         FLOAT,
+            mrr              FLOAT,
+            avg_faithfulness FLOAT,
+            run_at           TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS eval_results (
+            id                TEXT PRIMARY KEY,
+            run_id            TEXT REFERENCES eval_runs(id) ON DELETE CASCADE,
+            question_id       TEXT REFERENCES eval_questions(id) ON DELETE CASCADE,
+            question          TEXT,
+            expected_source   TEXT,
+            retrieved_sources TEXT[],
+            hit_at_1          BOOLEAN,
+            hit_at_3          BOOLEAN,
+            hit_at_5          BOOLEAN,
+            reciprocal_rank   FLOAT,
+            faithfulness      FLOAT,
+            generated_answer  TEXT,
+            created_at        TIMESTAMP DEFAULT NOW()
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -79,6 +121,130 @@ def init_qdrant():
             print(f"Qdrant not ready (attempt {attempt+1}/12): {e}")
             time.sleep(5)
     raise RuntimeError("Could not connect to Qdrant after 12 attempts")
+
+
+def dedupe_results(results, top_k, max_chunks_per_doc=2):
+    """Keep up to max_chunks_per_doc chunks per filename, sorted by score.
+
+    Allowing 2 chunks per doc improves faithfulness (Mistral sees more of the
+    correct document) without affecting Hit rate (document-level retrieval is
+    unchanged — the right filename still appears in results).
+    Results from Qdrant are already score-sorted, so we preserve that order.
+    """
+    seen = {}   # filename -> count of chunks kept so far
+    kept = []
+    for r in results:
+        fname = r.payload.get('filename', '')
+        count = seen.get(fname, 0)
+        if count < max_chunks_per_doc:
+            kept.append(r)
+            seen[fname] = count + 1
+    return kept[:top_k]
+
+
+async def generate_eval_questions(doc_id: str, filename: str, doc_type: str, text: str) -> int:
+    """Generate Q&A pairs from a document and store them in eval_questions. Returns count stored."""
+    prompt = (
+        "You are creating evaluation questions for a RAG retrieval system.\n"
+        "Given the document excerpt below, generate EXACTLY 5 question-answer pairs.\n"
+        "Requirements:\n"
+        "- Each question must be answerable ONLY from this document\n"
+        "- Questions must be specific (include document numbers, names, values where present)\n"
+        "- Vary question types: what, which, how many, what is the status of, etc.\n"
+        "- Answers must be concise (1-3 sentences)\n\n"
+        "Output EXACTLY this format — no preamble, no explanation:\n"
+        "Q1: <question>\nA1: <answer>\n"
+        "Q2: <question>\nA2: <answer>\n"
+        "Q3: <question>\nA3: <answer>\n"
+        "Q4: <question>\nA4: <answer>\n"
+        "Q5: <question>\nA5: <answer>\n\n"
+        f"Document: {filename}\nType: {doc_type}\n\nContent:\n{text[:4000]}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 1000}
+            )
+            raw = r.json().get("response", "")
+
+        # Parse Q/A pairs with regex
+        import re
+        pairs = re.findall(r'Q\d+:\s*(.+?)\nA\d+:\s*(.+?)(?=\nQ\d+:|\Z)', raw, re.DOTALL)
+        if not pairs:
+            return 0
+
+        conn = get_db()
+        cur  = conn.cursor()
+        count = 0
+        for q, a in pairs:
+            q, a = q.strip(), a.strip()
+            if len(q) > 10 and len(a) > 5:
+                cur.execute(
+                    "INSERT INTO eval_questions (id, doc_id, filename, doc_type, question, expected_answer) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (str(uuid.uuid4()), doc_id, filename, doc_type, q, a)
+                )
+                count += 1
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"Generated {count} eval questions for {filename}")
+        return count
+    except Exception as e:
+        print(f"Eval question generation failed for {filename}: {e}")
+        return 0
+
+
+async def score_faithfulness(answer: str, context: str) -> float:
+    """Ask Mistral to rate how well the answer is grounded in the context (0.0–1.0)."""
+    prompt = (
+        "You are evaluating a RAG system's answer for faithfulness.\n"
+        "Faithfulness = every claim in the answer is directly supported by the context.\n\n"
+        f"CONTEXT:\n{context[:3000]}\n\n"
+        f"ANSWER:\n{answer[:1000]}\n\n"
+        "Score the answer's faithfulness from 0 to 10, where:\n"
+        "10 = every claim is explicitly in the context\n"
+        "5  = some claims supported, some not verifiable\n"
+        "0  = answer contradicts or ignores the context\n\n"
+        "Reply with ONLY a single integer (0-10). No explanation."
+    )
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 5}
+            )
+            raw = r.json().get("response", "5").strip()
+            import re
+            m = re.search(r'\d+', raw)
+            score = int(m.group()) if m else 5
+            return round(min(max(score, 0), 10) / 10.0, 2)
+    except Exception:
+        return 0.5
+
+
+async def rewrite_query(question: str) -> str:
+    """Rewrite a conversational question into retrieval-optimised keyword terms.
+    Falls back to the original question if Ollama is slow or fails."""
+    prompt = (
+        "You are a search query optimizer for EPC data centre construction documents.\n"
+        "Rewrite the question below as a short, keyword-rich search phrase that will retrieve "
+        "the most relevant document chunks from a vector index.\n"
+        "Rules: output ONLY the rewritten query on a single line. No explanation. No quotes.\n\n"
+        f"Question: {question}\n"
+        "Search query:"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 60}
+            )
+            rewritten = r.json().get("response", "").strip().splitlines()[0].strip()
+            return rewritten if len(rewritten) > 4 else question
+    except Exception:
+        return question   # safe fallback — original question used instead
 
 
 def chunk_text(text):
@@ -192,8 +358,13 @@ async def upload_document(file: UploadFile = File(...), doc_type: str = Form(...
         ))
     get_qdrant().upsert(collection_name=COLLECTION, points=points)
 
+    # Generate eval Q&A pairs from first 4000 chars of document text (async, best-effort)
+    import asyncio
+    asyncio.create_task(generate_eval_questions(doc_id, file.filename, doc_type, text))
+
     return {"id": doc_id, "filename": file.filename, "doc_type": doc_type,
-            "chunks_stored": len(chunks), "page_count": len(pdf_doc.pages)}
+            "chunks_stored": len(chunks), "page_count": len(pdf_doc.pages),
+            "eval_questions_generating": True}
 
 @app.get("/documents")
 def list_documents():
@@ -289,7 +460,8 @@ async def query_documents_stream(req: QueryRequest):
     import json
     from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
-    question_vector = embedder.encode(req.question).tolist()
+    retrieval_query = await rewrite_query(req.question)
+    question_vector = embedder.encode(retrieval_query).tolist()
 
     search_filter = None
     if req.doc_type:
@@ -298,10 +470,11 @@ async def query_documents_stream(req: QueryRequest):
     results = get_qdrant().search(
         collection_name=COLLECTION,
         query_vector=question_vector,
-        limit=req.top_k,
+        limit=req.top_k * 4,
         query_filter=search_filter,
         with_payload=True
     )
+    results = dedupe_results(results, req.top_k)
 
     if not results:
         async def empty():
@@ -349,7 +522,7 @@ Answer:"""
                                     yield token
                         except Exception:
                             pass
-        yield f"\n\n__SOURCES__{json.dumps(sources)}"
+        yield f'\n\n__META__{json.dumps({"rewritten_query": retrieval_query, "retrieval_score": round(sum(s["score"] for s in sources) / len(sources), 3) if sources else 0.0})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -511,12 +684,14 @@ async def spec_compliance_stream(req: QueryRequest):
     import json
     from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
-    question_vector = embedder.encode(req.question).tolist()
+    retrieval_query = await rewrite_query(req.question)
+    question_vector = embedder.encode(retrieval_query).tolist()
     results = get_qdrant().search(
-        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k * 4 or 20,
         query_filter={"must": [{"key": "doc_type", "match": {"value": "specification"}}]},
         with_payload=True
     )
+    results = dedupe_results(results, req.top_k or 5)
     if not results:
         async def empty():
             yield "No specification documents found."
@@ -563,7 +738,7 @@ Analysis:"""
                             pass
         status = "NON-COMPLIANT" if "NON-COMPLIANT" in full_text else \
                  "COMPLIANT" if "COMPLIANT" in full_text else "REQUIRES VERIFICATION"
-        yield f'\n\n__META__{json.dumps({"compliance_status": status})}__SOURCES__{json.dumps(sources)}'
+        yield f'\n\n__META__{json.dumps({"compliance_status": status, "rewritten_query": retrieval_query, "retrieval_score": round(sum(s["score"] for s in sources) / len(sources), 3) if sources else 0.0})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -573,12 +748,14 @@ async def schedule_risk_stream(req: QueryRequest):
     import json
     from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
-    question_vector = embedder.encode(req.question).tolist()
+    retrieval_query = await rewrite_query(req.question)
+    question_vector = embedder.encode(retrieval_query).tolist()
     results = get_qdrant().search(
-        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k * 4 or 20,
         query_filter={"must": [{"key": "doc_type", "match": {"value": "schedule"}}]},
         with_payload=True
     )
+    results = dedupe_results(results, req.top_k or 5)
     if not results:
         async def empty():
             yield "No schedule documents found."
@@ -624,7 +801,7 @@ Risk Analysis:"""
                         except Exception:
                             pass
         risk = "HIGH" if "HIGH" in full_text else "MEDIUM" if "MEDIUM" in full_text else "LOW"
-        yield f'\n\n__META__{json.dumps({"risk_level": risk})}__SOURCES__{json.dumps(sources)}'
+        yield f'\n\n__META__{json.dumps({"risk_level": risk, "rewritten_query": retrieval_query, "retrieval_score": round(sum(s["score"] for s in sources) / len(sources), 3) if sources else 0.0})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -634,12 +811,14 @@ async def rfi_copilot_stream(req: QueryRequest):
     import json
     from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
-    question_vector = embedder.encode(req.question).tolist()
+    retrieval_query = await rewrite_query(req.question)
+    question_vector = embedder.encode(retrieval_query).tolist()
     results = get_qdrant().search(
-        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k * 4 or 20,
         query_filter={"must": [{"key": "doc_type", "match": {"value": "rfi"}}]},
         with_payload=True
     )
+    results = dedupe_results(results, req.top_k or 5)
 
     context, sources = "", []
     for i, r in enumerate(results):
@@ -677,7 +856,7 @@ RFI Analysis:"""
                                     yield token
                         except Exception:
                             pass
-        yield f'\n\n__META__{json.dumps({})}__SOURCES__{json.dumps(sources)}'
+        yield f'\n\n__META__{json.dumps({"rewritten_query": retrieval_query, "retrieval_score": round(sum(s["score"] for s in sources) / len(sources), 3) if sources else 0.0})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -725,12 +904,14 @@ async def supply_chain_stream(req: QueryRequest):
     import json
     from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
 
-    question_vector = embedder.encode(req.question).tolist()
+    retrieval_query = await rewrite_query(req.question)
+    question_vector = embedder.encode(retrieval_query).tolist()
     results = get_qdrant().search(
-        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k * 4 or 20,
         query_filter={"must": [{"key": "doc_type", "match": {"value": "supply_chain"}}]},
         with_payload=True
     )
+    results = dedupe_results(results, req.top_k or 5)
     if not results:
         async def empty():
             yield "No supply chain documents found. Please upload procurement data first."
@@ -785,7 +966,7 @@ Supply Chain Analysis:"""
 
         risk = "CRITICAL" if "CRITICAL" in full_text else \
                "AT RISK" if "AT RISK" in full_text or "HIGH" in full_text else "ON TRACK"
-        yield f'\n\n__META__{json.dumps({"delivery_risk": risk})}__SOURCES__{json.dumps(sources)}'
+        yield f'\n\n__META__{json.dumps({"delivery_risk": risk, "rewritten_query": retrieval_query, "retrieval_score": round(sum(s["score"] for s in sources) / len(sources), 3) if sources else 0.0})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
 
@@ -820,12 +1001,14 @@ Context:\n{context}\nQuery: {req.question}\nAnalysis:"""
 async def commissioning_qa_stream(req: QueryRequest):
     import json
     from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
-    question_vector = embedder.encode(req.question).tolist()
+    retrieval_query = await rewrite_query(req.question)
+    question_vector = embedder.encode(retrieval_query).tolist()
     results = get_qdrant().search(
-        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k or 5,
+        collection_name=COLLECTION, query_vector=question_vector, limit=req.top_k * 4 or 20,
         query_filter={"must": [{"key": "doc_type", "match": {"value": "commissioning"}}]},
         with_payload=True
     )
+    results = dedupe_results(results, req.top_k or 5)
     if not results:
         async def empty():
             yield "No commissioning documents found. Please upload commissioning QA data first."
@@ -871,6 +1054,227 @@ Commissioning context:\n{context}\nQuery: {req.question}\nQA Analysis:"""
             yield "[ERROR: Response timed out. Please retry.]"
             return
         status = "FAIL" if "FAIL" in full_text else "PASS" if "PASS" in full_text else "PARTIAL"
-        yield f'\n\n__META__{json.dumps({"test_status": status})}__SOURCES__{json.dumps(sources)}'
+        yield f'\n\n__META__{json.dumps({"test_status": status, "rewritten_query": retrieval_query, "retrieval_score": round(sum(s["score"] for s in sources) / len(sources), 3) if sources else 0.0})}__SOURCES__{json.dumps(sources)}'
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+# ─────────────────────────────────────────────
+#  EVAL ENDPOINTS
+# ─────────────────────────────────────────────
+
+@app.get("/eval/questions")
+def list_eval_questions(doc_id: str = None, validated: bool = None, rejected: bool = None):
+    conn = get_db(); cur = conn.cursor()
+    query = "SELECT id, doc_id, filename, doc_type, question, expected_answer, validated, rejected, created_at FROM eval_questions WHERE 1=1"
+    params = []
+    if doc_id:
+        query += " AND doc_id = %s"; params.append(doc_id)
+    if validated is not None:
+        query += " AND validated = %s"; params.append(validated)
+    if rejected is not None:
+        query += " AND rejected = %s"; params.append(rejected)
+    query += " ORDER BY created_at DESC"
+    cur.execute(query, params)
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return [{"id": r[0], "doc_id": r[1], "filename": r[2], "doc_type": r[3],
+             "question": r[4], "expected_answer": r[5], "validated": r[6],
+             "rejected": r[7], "created_at": str(r[8])} for r in rows]
+
+
+class EvalQuestionPatch(BaseModel):
+    validated: bool = None
+    rejected: bool = None
+
+
+@app.patch("/eval/questions/{question_id}")
+def update_eval_question(question_id: str, body: EvalQuestionPatch):
+    conn = get_db(); cur = conn.cursor()
+    if body.validated is not None:
+        cur.execute("UPDATE eval_questions SET validated=%s, rejected=FALSE WHERE id=%s",
+                    (body.validated, question_id))
+    if body.rejected is not None:
+        cur.execute("UPDATE eval_questions SET rejected=%s, validated=FALSE WHERE id=%s",
+                    (body.rejected, question_id))
+    conn.commit(); cur.close(); conn.close()
+    return {"ok": True}
+
+
+@app.delete("/eval/questions/{question_id}")
+def delete_eval_question(question_id: str):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM eval_questions WHERE id=%s", (question_id,))
+    conn.commit(); cur.close(); conn.close()
+    return {"ok": True}
+
+
+@app.post("/eval/questions/{doc_id}/generate")
+async def generate_questions_for_doc(doc_id: str):
+    """Generate (or re-generate) eval questions for an already-uploaded document."""
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT filename, doc_type FROM documents WHERE id=%s", (doc_id,))
+    row = cur.fetchone(); cur.close(); conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found")
+    filename, doc_type = row
+
+    results = get_qdrant().scroll(
+        collection_name=COLLECTION,
+        scroll_filter={"must": [{"key": "doc_id", "match": {"value": doc_id}}]},
+        limit=50, with_payload=True, with_vectors=False
+    )
+    text = " ".join(p.payload.get("text", "") for p in results[0])
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM eval_questions WHERE doc_id=%s AND validated=FALSE AND rejected=FALSE", (doc_id,))
+    conn.commit(); cur.close(); conn.close()
+
+    count = await generate_eval_questions(doc_id, filename, doc_type, text)
+    return {"generated": count, "doc_id": doc_id, "filename": filename}
+
+
+# ── Eval background state ──────────────────────────────────────────────────────
+_eval_state = {"running": False, "last_run_id": None, "error": None}
+
+
+async def _run_eval_background():
+    """Execute eval for all validated questions and persist results. Runs as background task."""
+    _eval_state["running"] = True
+    _eval_state["error"] = None
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""
+            SELECT id, doc_id, filename, doc_type, question, expected_answer
+            FROM eval_questions WHERE validated=TRUE AND rejected=FALSE ORDER BY created_at
+        """)
+        questions = cur.fetchall(); cur.close(); conn.close()
+
+        if not questions:
+            _eval_state["error"] = "No validated questions found."
+            return
+
+        run_id = str(uuid.uuid4())
+        results = []
+
+        for q_id, doc_id, filename, doc_type, question, expected_answer in questions:
+            retrieval_query = await rewrite_query(question)
+            q_vec = embedder.encode(retrieval_query).tolist()
+            hits = get_qdrant().search(
+                collection_name=COLLECTION, query_vector=q_vec, limit=20,
+                query_filter={"must": [{"key": "doc_type", "match": {"value": doc_type}}]},
+                with_payload=True
+            )
+            hits = dedupe_results(hits, 5)
+            retrieved_sources = [h.payload["filename"] for h in hits]
+            rank = next((i + 1 for i, h in enumerate(hits) if h.payload["filename"] == filename), None)
+            context = "\n".join(
+                f"[Source {i+1}: {h.payload['filename']}]\n{h.payload['text']}"
+                for i, h in enumerate(hits[:3])
+            )
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    r = await client.post(f"{OLLAMA_URL}/api/generate",
+                        json={"model": "mistral:7b", "prompt":
+                            f"Answer using ONLY the context below.\nContext:\n{context}\n\nQuestion: {question}\nAnswer:",
+                            "stream": False, "num_predict": 300})
+                    generated_answer = r.json().get("response", "").strip()
+            except Exception:
+                generated_answer = ""
+            faithfulness = await score_faithfulness(generated_answer, context)
+            results.append({
+                "id": str(uuid.uuid4()), "run_id": run_id, "question_id": q_id,
+                "question": question, "expected_source": filename,
+                "retrieved_sources": retrieved_sources,
+                "hit_at_1": rank == 1,
+                "hit_at_3": rank is not None and rank <= 3,
+                "hit_at_5": rank is not None and rank <= 5,
+                "reciprocal_rank": (1.0 / rank) if rank else 0.0,
+                "faithfulness": faithfulness, "generated_answer": generated_answer,
+            })
+
+        n = len(results)
+        summary = {
+            "hit_at_1":         round(sum(r["hit_at_1"]       for r in results) / n, 3),
+            "hit_at_3":         round(sum(r["hit_at_3"]       for r in results) / n, 3),
+            "hit_at_5":         round(sum(r["hit_at_5"]       for r in results) / n, 3),
+            "mrr":              round(sum(r["reciprocal_rank"] for r in results) / n, 3),
+            "avg_faithfulness": round(sum(r["faithfulness"]    for r in results) / n, 3),
+        }
+        conn = get_db(); cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO eval_runs (id, total_questions, hit_at_1, hit_at_3, hit_at_5, mrr, avg_faithfulness) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (run_id, n, summary["hit_at_1"], summary["hit_at_3"], summary["hit_at_5"],
+             summary["mrr"], summary["avg_faithfulness"])
+        )
+        for r in results:
+            cur.execute(
+                "INSERT INTO eval_results (id, run_id, question_id, question, expected_source, "
+                "retrieved_sources, hit_at_1, hit_at_3, hit_at_5, reciprocal_rank, faithfulness, generated_answer) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (r["id"], r["run_id"], r["question_id"], r["question"], r["expected_source"],
+                 r["retrieved_sources"], r["hit_at_1"], r["hit_at_3"], r["hit_at_5"],
+                 r["reciprocal_rank"], r["faithfulness"], r["generated_answer"])
+            )
+        conn.commit(); cur.close(); conn.close()
+        _eval_state["last_run_id"] = run_id
+    except Exception as e:
+        _eval_state["error"] = str(e)
+    finally:
+        _eval_state["running"] = False
+
+
+@app.post("/eval/run")
+async def run_eval(background_tasks: BackgroundTasks):
+    """Start eval as a background task. Returns immediately. Poll /eval/status for progress."""
+    if _eval_state["running"]:
+        raise HTTPException(status_code=409, detail="Eval already running. Poll /eval/status.")
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM eval_questions WHERE validated=TRUE AND rejected=FALSE")
+    count = cur.fetchone()[0]; cur.close(); conn.close()
+    if count == 0:
+        raise HTTPException(status_code=400, detail="No validated questions found.")
+    background_tasks.add_task(_run_eval_background)
+    return {"status": "started", "total_questions": count,
+            "message": "Eval running in background. Poll /eval/status for completion."}
+
+
+@app.get("/eval/status")
+def eval_status():
+    """Check if an eval is currently running."""
+    return {"running": _eval_state["running"], "last_run_id": _eval_state["last_run_id"],
+            "error": _eval_state["error"]}
+
+
+@app.get("/eval/runs")
+def list_eval_runs():
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""SELECT id, total_questions, hit_at_1, hit_at_3, hit_at_5, mrr, avg_faithfulness, run_at
+                   FROM eval_runs ORDER BY run_at DESC LIMIT 20""")
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return [{"id": r[0], "total_questions": r[1], "hit_at_1": r[2], "hit_at_3": r[3],
+             "hit_at_5": r[4], "mrr": r[5], "avg_faithfulness": r[6], "run_at": str(r[7])} for r in rows]
+
+
+@app.get("/eval/runs/latest")
+def latest_eval_run():
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""SELECT id, total_questions, hit_at_1, hit_at_3, hit_at_5, mrr, avg_faithfulness, run_at
+                   FROM eval_runs ORDER BY run_at DESC LIMIT 1""")
+    row = cur.fetchone(); cur.close(); conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "total_questions": row[1], "hit_at_1": row[2], "hit_at_3": row[3],
+            "hit_at_5": row[4], "mrr": row[5], "avg_faithfulness": row[6], "run_at": str(row[7])}
+
+
+@app.get("/eval/runs/{run_id}/results")
+def get_run_results(run_id: str):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""SELECT id, question_id, question, expected_source, retrieved_sources,
+                          hit_at_1, hit_at_3, hit_at_5, reciprocal_rank, faithfulness, generated_answer
+                   FROM eval_results WHERE run_id=%s ORDER BY created_at""", (run_id,))
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return [{"id": r[0], "question_id": r[1], "question": r[2], "expected_source": r[3],
+             "retrieved_sources": r[4], "hit_at_1": r[5], "hit_at_3": r[6], "hit_at_5": r[7],
+             "reciprocal_rank": r[8], "faithfulness": r[9], "generated_answer": r[10]} for r in rows]

@@ -97,10 +97,10 @@ export default function SupplyChain() {
     try {
       await streamAgent(
         '/api/agents/supply-chain/stream',
-        { query, top_k: topK },
+        { question: query, top_k: topK },
         tok => setStream(tok),
         (analysis, meta, sources) => {
-          setResult({ analysis, status: meta?.delivery_risk, sources: sources || [] })
+          setResult({ analysis, status: meta?.delivery_risk, sources: sources || [], rewrittenQuery: meta?.rewritten_query, retrievalScore: meta?.retrieval_score })
           setLoading(false)
           setTimeout(() => setRevealed(true), 60)
         }
@@ -231,11 +231,38 @@ export default function SupplyChain() {
                     </div>
                   </div>
                 </div>
-                <div className="rounded-2xl p-5"
-                  style={{ background:'rgba(255,255,255,0.05)', backdropFilter:'blur(16px)', border:'1px solid rgba(255,255,255,0.1)' }}>
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Analysis</h3>
-                  <p className="text-slate-200 text-sm leading-relaxed whitespace-pre-wrap">{result.analysis}</p>
+                <div className="rounded-2xl overflow-hidden"
+                  style={{ background:'rgba(4,8,20,0.85)', backdropFilter:'blur(20px)',
+                    border:'1px solid rgba(249,115,22,0.28)', boxShadow:'0 0 50px rgba(249,115,22,0.07)' }}>
+                  <div className="flex items-center gap-2 px-5 py-3"
+                    style={{ background:'rgba(255,255,255,0.04)', borderBottom:'1px solid rgba(255,255,255,0.07)' }}>
+                    <div className="w-3 h-3 rounded-full bg-red-500/80"/>
+                    <div className="w-3 h-3 rounded-full bg-yellow-400/80"/>
+                    <div className="w-3 h-3 rounded-full bg-green-500/80"/>
+                    <span className="ml-3 text-xs text-slate-400 font-mono">supply-chain › analysis</span>
+                    <span className="ml-auto text-xs text-orange-400 font-mono">✓ complete</span>
+                    {result.retrievalScore !== undefined && (
+                      <span className="text-xs font-mono px-2 py-0.5 rounded-full ml-2"
+                        style={{
+                          background: result.retrievalScore >= 0.70 ? 'rgba(34,197,94,0.15)' : result.retrievalScore >= 0.50 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
+                          color: result.retrievalScore >= 0.70 ? '#86efac' : result.retrievalScore >= 0.50 ? '#fde047' : '#fca5a5',
+                        }}>
+                        {result.retrievalScore >= 0.70 ? '🟢' : result.retrievalScore >= 0.50 ? '🟡' : '🔴'} {Math.round(result.retrievalScore * 100)}% retrieval
+                      </span>
+                    )}
+                  </div>
+                  <div className="p-6" style={{ fontFamily:'monospace' }}>
+                    <span className="text-orange-400 select-none">› </span>
+                    <span className="text-green-300 text-sm leading-relaxed whitespace-pre-wrap">{result.analysis}</span>
+                  </div>
                 </div>
+                {result.rewrittenQuery && result.rewrittenQuery !== query && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                    style={{ background:'rgba(249,115,22,0.08)', border:'1px solid rgba(249,115,22,0.18)' }}>
+                    <span className="text-xs text-slate-500 font-mono shrink-0">↻ searched as:</span>
+                    <span className="text-xs text-orange-300 font-mono italic truncate">{result.rewrittenQuery}</span>
+                  </div>
+                )}
                 {result.sources.length > 0 && (
                   <div className="space-y-2">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
@@ -249,11 +276,29 @@ export default function SupplyChain() {
                           <span className="flex-none w-6 h-6 rounded-md flex items-center justify-center text-xs font-black text-white"
                             style={{ background:'linear-gradient(135deg,#f97316,#ea580c)' }}>{i + 1}</span>
                           <div className="flex-1 min-w-0">
-                            <span className="px-2 py-0.5 rounded text-xs font-semibold text-orange-300 mb-1 inline-block"
-                              style={{ background:'rgba(249,115,22,0.15)' }}>
-                              {src.source || src.metadata?.source || 'document'}
-                            </span>
-                            <p className="text-slate-300 text-xs leading-relaxed">{src.content || src.text}</p>
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="px-2 py-0.5 rounded text-xs font-bold text-orange-300"
+                                style={{ background:'rgba(249,115,22,0.15)' }}>
+                                📄 {src.filename ? src.filename.replace(/\.pdf$/i,'') : 'Document'}
+                              </span>
+                              {src.doc_type && (
+                                <span className="px-2 py-0.5 rounded text-xs text-slate-400"
+                                  style={{ background:'rgba(255,255,255,0.06)' }}>
+                                  {src.doc_type.replace(/_/g,' ')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 mb-1.5">
+                              <span className="text-xs text-slate-500">§ Chunk {(src.chunk_index ?? 0) + 1}</span>
+                              {src.score !== undefined && (
+                                <span className="text-xs text-slate-500">{Math.round(src.score * 100)}% relevance</span>
+                              )}
+                            </div>
+                            {src.text_preview && (
+                              <p className="text-slate-400 text-xs leading-relaxed italic border-l-2 border-orange-800 pl-2">
+                                "{src.text_preview.slice(0,180)}{src.text_preview.length > 180 ? '…' : ''}"
+                              </p>
+                            )}
                           </div>
                         </div>
                       </div>

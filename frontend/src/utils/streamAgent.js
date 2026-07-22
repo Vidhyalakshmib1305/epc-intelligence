@@ -12,7 +12,10 @@ export async function streamAgent(url, body, onToken, onDone) {
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data.detail || `Server error: ${res.status}`)
+    const detail = Array.isArray(data.detail)
+      ? data.detail.map(e => e.msg || JSON.stringify(e)).join('; ')
+      : (typeof data.detail === 'string' ? data.detail : `Server error ${res.status}`)
+    throw new Error(detail)
   }
 
   const reader = res.body.getReader()
@@ -36,7 +39,7 @@ export async function streamAgent(url, body, onToken, onDone) {
       try {
         const meta = JSON.parse(metaStr.trim())
         const sources = JSON.parse(sourcesStr.trim())
-        onDone({ analysis: analysisPart.trim(), sources, ...meta })
+        onDone(analysisPart.trim(), meta, sources)
       } catch {
         onDone({ analysis: analysisPart.trim(), sources: [] })
       }

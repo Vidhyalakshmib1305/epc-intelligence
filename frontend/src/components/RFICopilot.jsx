@@ -96,10 +96,10 @@ export default function RFICopilot() {
     try {
       await streamAgent(
         '/api/agents/rfi-copilot/stream',
-        { query, top_k: topK },
+        { question: query, top_k: topK },
         tok => setStream(tok),
-        (analysis, _meta, sources) => {
-          setResult({ analysis, sources: sources || [] })
+        (analysis, meta, sources) => {
+          setResult({ analysis, sources: sources || [], rewrittenQuery: meta?.rewritten_query, retrievalScore: meta?.retrieval_score })
           setLoading(false)
           setTimeout(() => setRevealed(true), 60)
         }
@@ -217,13 +217,29 @@ export default function RFICopilot() {
                     <div className="w-3 h-3 rounded-full bg-green-500/80"/>
                     <span className="ml-3 text-xs text-slate-400 font-mono">rfi-copilot › answer</span>
                     <span className="ml-auto text-xs text-teal-400 font-mono">✓ complete</span>
+                    {result.retrievalScore !== undefined && (
+                      <span className="text-xs font-mono px-2 py-0.5 rounded-full ml-2"
+                        style={{
+                          background: result.retrievalScore >= 0.70 ? 'rgba(34,197,94,0.15)' : result.retrievalScore >= 0.50 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
+                          color: result.retrievalScore >= 0.70 ? '#86efac' : result.retrievalScore >= 0.50 ? '#fde047' : '#fca5a5',
+                        }}>
+                        {result.retrievalScore >= 0.70 ? '🟢' : result.retrievalScore >= 0.50 ? '🟡' : '🔴'} {Math.round(result.retrievalScore * 100)}% retrieval
+                      </span>
+                    )}
                   </div>
-                  <div className="p-6 max-h-72 overflow-y-auto" style={{ fontFamily:'monospace' }}>
+                  <div className="p-6" style={{ fontFamily:'monospace' }}>
                     <span className="text-teal-400 select-none">› </span>
                     <span className="text-green-300 text-sm leading-relaxed whitespace-pre-wrap">{result.analysis}</span>
                   </div>
                 </div>
 
+                {result.rewrittenQuery && result.rewrittenQuery !== query && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                    style={{ background:'rgba(20,184,166,0.08)', border:'1px solid rgba(20,184,166,0.18)' }}>
+                    <span className="text-xs text-slate-500 font-mono shrink-0">↻ searched as:</span>
+                    <span className="text-xs text-teal-300 font-mono italic truncate">{result.rewrittenQuery}</span>
+                  </div>
+                )}
                 {result.sources.length > 0 && (
                   <div className="space-y-2">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
@@ -237,11 +253,29 @@ export default function RFICopilot() {
                           <span className="flex-none w-6 h-6 rounded-md flex items-center justify-center text-xs font-black text-white"
                             style={{ background:'linear-gradient(135deg,#14b8a6,#0d9488)' }}>{i + 1}</span>
                           <div className="flex-1 min-w-0">
-                            <span className="px-2 py-0.5 rounded text-xs font-semibold text-teal-300 mb-1 inline-block"
-                              style={{ background:'rgba(20,184,166,0.15)' }}>
-                              {src.source || src.metadata?.source || 'document'}
-                            </span>
-                            <p className="text-slate-300 text-xs leading-relaxed">{src.content || src.text}</p>
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="px-2 py-0.5 rounded text-xs font-bold text-teal-300"
+                                style={{ background:'rgba(20,184,166,0.15)' }}>
+                                📄 {src.filename ? src.filename.replace(/\.pdf$/i,'') : 'Document'}
+                              </span>
+                              {src.doc_type && (
+                                <span className="px-2 py-0.5 rounded text-xs text-slate-400"
+                                  style={{ background:'rgba(255,255,255,0.06)' }}>
+                                  {src.doc_type.replace(/_/g,' ')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3 mb-1.5">
+                              <span className="text-xs text-slate-500">§ Chunk {(src.chunk_index ?? 0) + 1}</span>
+                              {src.score !== undefined && (
+                                <span className="text-xs text-slate-500">{Math.round(src.score * 100)}% relevance</span>
+                              )}
+                            </div>
+                            {src.text_preview && (
+                              <p className="text-slate-400 text-xs leading-relaxed italic border-l-2 border-teal-800 pl-2">
+                                "{src.text_preview.slice(0,180)}{src.text_preview.length > 180 ? '…' : ''}"
+                              </p>
+                            )}
                           </div>
                         </div>
                       </div>

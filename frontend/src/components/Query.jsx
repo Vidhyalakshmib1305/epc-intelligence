@@ -79,9 +79,11 @@ export default function Query() {
   const [question, setQuestion] = useState('')
   const [topK, setTopK]         = useState(3)
   const [loading, setLoading]   = useState(false)
-  const [answer, setAnswer]     = useState('')
-  const [sources, setSources]   = useState([])
-  const [error, setError]       = useState('')
+  const [answer, setAnswer]         = useState('')
+  const [sources, setSources]       = useState([])
+  const [rewrittenQuery, setRewrittenQuery] = useState('')
+  const [retrievalScore, setRetrievalScore] = useState(null)
+  const [error, setError]           = useState('')
   const [focused, setFocused]   = useState(false)
   const [dotIdx, setDotIdx]     = useState(0)
   const answerRef = useRef(null)
@@ -104,15 +106,17 @@ export default function Query() {
     if (!question.trim() || loading) return
     if (ctrlRef.current) ctrlRef.current.abort()
     ctrlRef.current = new AbortController()
-    setLoading(true); setAnswer(''); setSources([]); setError('')
+    setLoading(true); setAnswer(''); setSources([]); setRewrittenQuery(''); setRetrievalScore(null); setError('')
     try {
       await streamAgent(
         '/api/query/stream',
         { question, top_k: topK },
         (tok) => setAnswer(tok),
-        (analysis, _meta, srcs) => {
+        (analysis, meta, srcs) => {
           setAnswer(analysis)
           setSources(srcs || [])
+          setRewrittenQuery(meta?.rewritten_query || '')
+          setRetrievalScore(meta?.retrieval_score ?? null)
           setLoading(false)
         }
       )
@@ -219,6 +223,15 @@ export default function Query() {
               <span className="ml-3 text-xs text-slate-400 font-mono">mistral-7b-instruct › rag-response</span>
               {loading && <span className="ml-auto text-xs text-indigo-400 font-mono animate-pulse">● streaming</span>}
               {!loading && answer && <span className="ml-auto text-xs text-green-400 font-mono">✓ complete</span>}
+              {!loading && retrievalScore !== null && (
+                <span className="text-xs font-mono px-2 py-0.5 rounded-full ml-2"
+                  style={{
+                    background: retrievalScore >= 0.70 ? 'rgba(34,197,94,0.15)' : retrievalScore >= 0.50 ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)',
+                    color: retrievalScore >= 0.70 ? '#86efac' : retrievalScore >= 0.50 ? '#fde047' : '#fca5a5',
+                  }}>
+                  {retrievalScore >= 0.70 ? '🟢' : retrievalScore >= 0.50 ? '🟡' : '🔴'} {Math.round(retrievalScore * 100)}% retrieval
+                </span>
+              )}
             </div>
 
             {/* Horizontal scan line while loading */}
@@ -252,6 +265,15 @@ export default function Query() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── Rewritten query pill ── */}
+        {!loading && rewrittenQuery && rewrittenQuery !== question && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+            style={{ background:'rgba(99,102,241,0.08)', border:'1px solid rgba(99,102,241,0.18)' }}>
+            <span className="text-xs text-slate-500 font-mono shrink-0">↻ searched as:</span>
+            <span className="text-xs text-indigo-300 font-mono italic truncate">{rewrittenQuery}</span>
           </div>
         )}
 
@@ -293,22 +315,29 @@ export default function Query() {
                     style={{ background:'linear-gradient(135deg,#6366f1,#3b82f6)' }}
                   >{i + 1}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <span
-                        className="px-2 py-0.5 rounded-md text-xs font-semibold text-indigo-300"
-                        style={{ background:'rgba(99,102,241,0.18)' }}
-                      >
-                        {src.source || src.metadata?.source || 'document'}
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="px-2 py-0.5 rounded-md text-xs font-bold text-indigo-300"
+                        style={{ background:'rgba(99,102,241,0.18)' }}>
+                        📄 {src.filename ? src.filename.replace(/\.pdf$/i,'') : 'Document'}
                       </span>
-                      {src.score !== undefined && (
-                        <span className="text-xs text-slate-500">
-                          relevance {Math.round(src.score * 100)}%
+                      {src.doc_type && (
+                        <span className="px-2 py-0.5 rounded text-xs text-slate-400"
+                          style={{ background:'rgba(255,255,255,0.06)' }}>
+                          {src.doc_type.replace(/_/g,' ')}
                         </span>
                       )}
                     </div>
-                    <p className="text-slate-300 text-xs leading-relaxed">
-                      {src.content || src.text || '—'}
-                    </p>
+                    <div className="flex items-center gap-3 mb-1.5">
+                      <span className="text-xs text-slate-500">§ Chunk {(src.chunk_index ?? 0) + 1}</span>
+                      {src.score !== undefined && (
+                        <span className="text-xs text-slate-500">{Math.round(src.score * 100)}% relevance</span>
+                      )}
+                    </div>
+                    {src.text_preview && (
+                      <p className="text-slate-400 text-xs leading-relaxed italic border-l-2 border-indigo-800 pl-2">
+                        "{src.text_preview.slice(0,180)}{src.text_preview.length > 180 ? '…' : ''}"
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>

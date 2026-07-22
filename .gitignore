@@ -1,31 +1,52 @@
-# Dependencies
+# ── Node / Frontend ───────────────────────────────
 node_modules/
 frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.npm
 
-# Python
+# ── Python / Backend ──────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 *.egg-info/
-.env
+*.egg
 venv/
 .venv/
+env/
+.pytest_cache/
 
-# Build output
-frontend/dist/
-*.egg
+# ── Uploads (user data, not code) ─────────────────
+api/uploads/
 
-# Docker volumes / data
+# ── Docker volumes / local data ───────────────────
 postgres_data/
 qdrant_data/
 ollama_data/
+ollama/
 
-# OS
+# ── Environment & secrets ─────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── OS files ──────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Editor
-.vscode/settings.json
+# ── Editor / IDE ──────────────────────────────────
+.vscode/
 .idea/
+*.swp
+*.swo
 
-# Pytest
-.pytest_cache/
+# ── Logs ──────────────────────────────────────────
+*.log
+logs/
+
+# ── Misc ──────────────────────────────────────────
+*.tmp
+*.temp
+Untitled

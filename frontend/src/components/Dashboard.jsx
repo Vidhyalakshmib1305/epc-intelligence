@@ -127,6 +127,7 @@ export default function Dashboard({ onNavigate }) {
   const [progress, setProgress] = useState(0)
   const [displayTitle, setDisplayTitle] = useState('')
   const [titleDone, setTitleDone] = useState(false)
+  const [evalLatest, setEvalLatest] = useState(null)
   const title = "Hyperscale Data Centre"
 
   useEffect(() => {
@@ -138,6 +139,9 @@ export default function Dashboard({ onNavigate }) {
     fetch('/api/documents').then(r => r.json())
       .then(d => { setDocCount(d.length); setLoaded(true) })
       .catch(() => setLoaded(true))
+    fetch('/api/eval/runs/latest').then(r => r.json())
+      .then(d => { if (d?.id) setEvalLatest(d) })
+      .catch(() => {})
     setTimeout(() => setProgress(64), 700)
     return () => clearInterval(iv)
   }, [])
@@ -218,6 +222,52 @@ export default function Dashboard({ onNavigate }) {
             <span className="flex items-center gap-1 text-yellow-600 font-semibold bg-yellow-50 px-2 py-1 rounded-lg">⏳ 1 Pending</span>
             <span className="flex items-center gap-1 text-gray-400 font-medium bg-gray-50 px-2 py-1 rounded-lg">⬜ 17 Not Started</span>
           </div>
+        </div>
+
+        {/* RAG Eval Health Card */}
+        <div className="rounded-2xl p-5 cursor-pointer transition-all hover:scale-[1.01]"
+          style={{ background: evalLatest
+            ? 'linear-gradient(135deg,rgba(99,102,241,0.12),rgba(79,70,229,0.08))'
+            : 'rgba(255,255,255,0.03)',
+            border: evalLatest ? '1px solid rgba(99,102,241,0.3)' : '1px dashed rgba(255,255,255,0.12)' }}
+          onClick={() => onNavigate('eval')}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🧪</span>
+              <div>
+                <p className="font-bold text-white text-sm">RAG Quality Metrics</p>
+                <p className="text-slate-400 text-xs">
+                  {evalLatest
+                    ? `Last run: ${evalLatest.run_at?.slice(0,10)} · ${evalLatest.total_questions} questions`
+                    : 'No eval run yet — click to set up'}
+                </p>
+              </div>
+            </div>
+            <span className="text-slate-500 text-xs font-mono">→ RAG Eval</span>
+          </div>
+          {evalLatest ? (
+            <div className="grid grid-cols-5 gap-3">
+              {[
+                { label: 'Hit@1',        val: evalLatest.hit_at_1,         color: '#6366f1' },
+                { label: 'Hit@3',        val: evalLatest.hit_at_3,         color: '#8b5cf6' },
+                { label: 'Hit@5',        val: evalLatest.hit_at_5,         color: '#a78bfa' },
+                { label: 'MRR',          val: evalLatest.mrr,              color: '#3b82f6' },
+                { label: 'Faithfulness', val: evalLatest.avg_faithfulness, color: '#10b981' },
+              ].map(m => (
+                <div key={m.label} className="rounded-xl p-3 text-center"
+                  style={{ background:'rgba(0,0,0,0.2)', border:`1px solid ${m.color}33` }}>
+                  <p className="text-lg font-black" style={{ color: m.color }}>
+                    {Math.round((m.val ?? 0) * 100)}%
+                  </p>
+                  <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-0.5">{m.label}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-slate-500 text-xs">
+              Generate Q&A pairs from uploaded documents, validate them, then run eval to see retrieval quality metrics here.
+            </p>
+          )}
         </div>
 
         {/* Agents */}

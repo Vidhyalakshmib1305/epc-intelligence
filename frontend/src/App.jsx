@@ -8,6 +8,7 @@ import RFICopilot from './components/RFICopilot'
 import SupplyChain from './components/SupplyChain'
 import CommissioningQA from './components/CommissioningQA'
 import Documents from './components/Documents'
+import EvalDashboard from './components/EvalDashboard'
 
 const NAV = [
   { id: 'dashboard',        label: 'Dashboard',        icon: '🏠' },
@@ -19,6 +20,7 @@ const NAV = [
   { id: 'commissioning-qa', label: 'Commissioning QA', icon: '🔬' },
   { id: 'documents',        label: 'Documents',        icon: '📁' },
   { id: 'upload',           label: 'Upload Documents', icon: '📤' },
+  { id: 'eval',             label: 'Quality Metrics',   icon: '📊' },
 ]
 
 export default function App() {
@@ -109,6 +111,7 @@ export default function App() {
             {activeTab === 'supply-chain'     && <SupplyChain />}
             {activeTab === 'commissioning-qa' && <CommissioningQA />}
             {activeTab === 'documents'        && <Documents />}
+            {activeTab === 'eval'             && <EvalDashboard />}
           </div>
         </div>
       </div>
