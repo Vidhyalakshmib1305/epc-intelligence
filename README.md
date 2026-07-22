@@ -134,7 +134,7 @@ cd epc-intelligence
 docker compose up -d
 ```
 
-This starts **5 containers** in the correct dependency order:
+This starts **6 containers** in the correct dependency order:
 
 ```
 epc_ollama       — Ollama LLM runtime server
