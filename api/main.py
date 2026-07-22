@@ -161,7 +161,7 @@ async def generate_eval_questions(doc_id: str, filename: str, doc_type: str, tex
         f"Document: {filename}\nType: {doc_type}\n\nContent:\n{text[:4000]}"
     )
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             r = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={"model": "mistral:7b", "prompt": prompt, "stream": False, "num_predict": 1000}
